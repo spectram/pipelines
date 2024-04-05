@@ -17,7 +17,7 @@ partition = 'Main'                # SLURM partition to use
 exclude = ''                      # SLURM nodes to exclude
 time = '12:00:00'
 submit = False
-container = '/idia/software/containers/casa-6.5.0-modular.sif'
+container = '/idia/software/containers/casa-6.6.0-modular.sif'
 mpi_wrapper = 'mpirun'
 name = ''
 dependencies = ''
@@ -26,7 +26,7 @@ reservation = ''
 modules = ['openmpi/4.0.3']
 verbose = False
 precal_scripts = [('calc_refant.py',False,''), ('partition.py',True,'')]
-postcal_scripts = [('concat.py',False,''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py',True,''), ('selfcal_part2.py',False,''), ('science_image.py', True, '')]
+postcal_scripts = [('concat.py',False,''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py',True,''), ('selfcal_part2.py',False,''), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', False, '')]
 scripts = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
@@ -78,17 +78,22 @@ outlier_threshold = 0.0           # S/N values if >= 1.0, otherwise Jy
 outlier_radius = 0.0              # Radius in degrees for identifying outliers in RACS
 
 [image]
-cell = '1.5arcsec'
-robust = -0.5
-imsize = [6144, 6144]
-wprojplanes = 512
+cell = '2arcsec'
+robust = 0.0
+imsize = [1500, 1500]
+wprojplanes = 128
 niter = 50000
-threshold = 10                    # S/N value if >= 1.0 and rmsmap != '', otherwise Jy
+threshold = '0.1mJy'              # S/N value if >= 1.0 and rmsmap != '', otherwise Jy
 multiscale = [0, 5, 10, 15]
 nterms = 2                        # Number of taylor terms
 gridder = 'wproject'
-deconvolver = 'mtmfs'
-restoringbeam = ''
+deconvolver = 'multiscale'
+specmode = 'cube'                 # 'mfs' for continuum image, 'cube' for spectral-line image
+uvtaper = '10arcsec'
+restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH)
+fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub, and SPW to select for imaging when specmode='cube'
+fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub
+restoringbeam = '10arcsec'
 stokes = 'I'
 pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
 pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"

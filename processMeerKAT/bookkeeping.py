@@ -310,6 +310,9 @@ def get_imaging_params():
     params = taskvals['image']
     params['vis'] = taskvals['data']['vis']
     params['keepmms'] = taskvals['crosscal']['keepmms']
+    params['spw'] = taskvals['crosscal']['spw']
+    params.pop('fitspw')
+    params.pop('fitorder')
 
     #Rename the masks that were already used
     if params['outlierfile'] != '' and os.path.exists(params['outlierfile']):

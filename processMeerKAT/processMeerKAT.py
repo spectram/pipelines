@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-__version__ = '2.0'
+__version__ = '2.1'
 
 license = """
     Process MeerKAT data via CASA MeasurementSet.
@@ -37,11 +37,11 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s")
 
 #Set global limits for current ilifu cluster configuration
-TOTAL_NODES_LIMIT = 79
+TOTAL_NODES_LIMIT = 59
 CPUS_PER_NODE_LIMIT = 32
 NTASKS_PER_NODE_LIMIT = CPUS_PER_NODE_LIMIT
-MEM_PER_NODE_GB_LIMIT = 232 #237568 MB
-MEM_PER_NODE_GB_LIMIT_HIGHMEM = 480 #491520 MB
+MEM_PER_NODE_GB_LIMIT = 251 #257568 MB
+MEM_PER_NODE_GB_LIMIT_HIGHMEM = 1508 #1544192 MB
 
 #Set global values for paths and file names
 THIS_PROG = __file__
@@ -59,10 +59,10 @@ SPW_PREFIX = '*:'
 FIELDS_CONFIG_KEYS = ['fluxfield','bpassfield','phasecalfield','targetfields','extrafields']
 CROSSCAL_CONFIG_KEYS = ['minbaselines','chanbin','width','timeavg','createmms','keepmms','spw','nspw','calcrefant','refant','standard','badants','badfreqranges']
 SELFCAL_CONFIG_KEYS = ['nloops','loop','cell','robust','imsize','wprojplanes','niter','threshold','uvrange','nterms','gridder','deconvolver','solint','calmode','discard_nloops','gaintype','outlier_threshold','flag','outlier_radius']
-IMAGING_CONFIG_KEYS = ['cell', 'robust', 'imsize', 'wprojplanes', 'niter', 'threshold', 'multiscale', 'nterms', 'gridder', 'deconvolver', 'restoringbeam', 'stokes', 'mask', 'rmsmap','outlierfile', 'pbthreshold', 'pbband']
+IMAGING_CONFIG_KEYS = ['cell', 'robust', 'imsize', 'wprojplanes', 'niter', 'threshold', 'multiscale', 'nterms', 'gridder', 'deconvolver', 'specmode', 'uvtaper', 'restfreq', 'fitspw', 'fitorder', 'restoringbeam', 'stokes', 'mask', 'rmsmap','outlierfile', 'pbthreshold', 'pbband']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
-CONTAINER = '/idia/software/containers/casa-6.5.0-modular.sif'
+CONTAINER = '/idia/software/containers/casa-6.6.0-modular.sif'
 MPI_WRAPPER = 'mpirun'
 PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts run before calibration at top level directory when nspw > 1
 POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''),('science_image.py', True, '')] #Scripts run after calibration at top level directory when nspw > 1
@@ -522,13 +522,13 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=MEM_PER_NODE_GB_LIMIT,name="jo
     #SBATCH --cpus-per-task={cpus}
     #SBATCH --mem={mem}GB
     #SBATCH --job-name={runname}{name}
-    #SBATCH --distribution=plane={plane}
     #SBATCH --output={LOG_DIR}/%x-{ID}.out
     #SBATCH --error={LOG_DIR}/%x-{ID}.err
     #SBATCH --partition={partition}
     #SBATCH --time={time}
 
     export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+    export SRUN_CPUS_PER_TASK=$SLURM_CPUS_PER_TASK
     {modules}
 
     {command}"""
@@ -1266,10 +1266,10 @@ def format_args(config,submit,quiet,dependencies,justrun):
         if nspw != 1:
             kwargs['threadsafe'][kwargs['num_precal_scripts']:] = [False]*len(kwargs['postcal_scripts'])
 
-    #Set threadsafe=True for quick-tclean, selfcal_part1 or science_image as tclean uses MPI even for an MS (TODO: ensure it doesn't crash for flagging step)
-    for threadsafe_script in ['quick_tclean.py','selfcal_part1.py','science_image.py']:
-        if threadsafe_script in kwargs['scripts']:
-            kwargs['threadsafe'][kwargs['scripts'].index(threadsafe_script)] = True
+    # #Set threadsafe=True for quick-tclean, selfcal_part1 or science_image as tclean uses MPI even for an MS (TODO: ensure it doesn't crash for flagging step)
+    # for threadsafe_script in ['quick_tclean.py','selfcal_part1.py','science_image.py']:
+    #     if threadsafe_script in kwargs['scripts']:
+    #         kwargs['threadsafe'][kwargs['scripts'].index(threadsafe_script)] = True
 
     #Only reduce the memory footprint if we're not using all CPUs on each node
     if kwargs['ntasks_per_node'] < NTASKS_PER_NODE_LIMIT and nspw > 1:

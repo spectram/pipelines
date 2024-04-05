@@ -83,7 +83,7 @@ def do_concat(visname, fields, dirs='*MHz'):
                     fname = msmd.namesforfields(int(fname))[0]
 
                 #Concat tt0 images (into continuum cube)
-                suffix = 'images/*.{0}*image.tt0'.format(fname)
+                suffix = 'images/*_{0}*image.tt0'.format(fname)
                 files,pattern = get_infiles(dirs,suffix)
                 out = '{0}.{1}.contcube'.format(filebase,fname)
                 images = check_output(fname,files,pattern,out,job='imageconcat',filetype='image')
@@ -100,7 +100,7 @@ def do_concat(visname, fields, dirs='*MHz'):
                         logger.error("Output image '{0}' attempted to write but was not written.".format(out))
 
                 #Concat images (into continuum cube)
-                suffix = 'images/*.{0}*image'.format(fname)
+                suffix = 'images/*_{0}*image'.format(fname)
                 files,pattern = get_infiles(dirs,suffix)
                 out = '{0}.{1}.contcube'.format(filebase,fname)
                 images = check_output(fname,files,pattern,out,job='imageconcat',filetype='image')

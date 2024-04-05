@@ -411,7 +411,9 @@ if __name__ == '__main__':
     loop += 1
 
     if config_parser.has_section(args['config'], 'image'):
-        config_parser.overwrite_config(args['config'], conf_dict={'mask' : "'{0}'".format(pixmask)}, conf_sec='image')
+        if config_parser.get_key(args['config'], 'image', 'specmode') != 'cube':
+            # Don't copy over continuum mask for cube-mode science imagin; allow for 3D mask (e.g. SoFiA)
+            config_parser.overwrite_config(args['config'], conf_dict={'mask' : "'{0}'".format(pixmask)}, conf_sec='image')
         config_parser.overwrite_config(args['config'], conf_dict={'rmsmap' : "'{0}'".format(rmsmap)}, conf_sec='image')
         config_parser.overwrite_config(args['config'], conf_dict={'outlierfile' : "'{0}'".format(outlierfile)}, conf_sec='image')
     config_parser.overwrite_config(args['config'], conf_dict={'loop' : loop},  conf_sec='selfcal')

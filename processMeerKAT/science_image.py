@@ -45,7 +45,6 @@ def do_pb_corr(inpimage, pbthreshold=0, pbband='LBand'):
     csys = ia.coordsys().torecord()
     imgdata = ia.getchunk()
     shape = ia.shape()
-    ia.close()
 
     cx, cy = shape[0]//2, shape[1]//2
 
@@ -57,12 +56,6 @@ def do_pb_corr(inpimage, pbthreshold=0, pbband='LBand'):
         cdelt = np.rad2deg(cdelt)
     elif unit == "'": #arcmin
         cdelt /= 60.
-
-    # Frequency of image, convert from Hz to MHz
-    try:
-        freq = csys['spectral1']['wcs']['crval']/1e6
-    except KeyError:
-        freq = csys['spectral2']['wcs']['crval']/1e6
 
     if pbband == 'LBand':
         PBeam = JimBeam('MKAT-AA-L-JIM-2020')
@@ -83,12 +76,12 @@ def do_pb_corr(inpimage, pbthreshold=0, pbband='LBand'):
     xx *= cdelt
     yy *= cdelt
 
-    # Generate the 2D PB image
-    beam_I = PBeam.I(xx, yy, freq)
+    # Generate the PB image/cube
+    beam_I = np.empty(shape)
+    for i in range(shape[-1]):
+        beam_I[:,:,0,i] = PBeam.I(xx, yy, (ia.toworld([0,0,0,i])['numeric'][-1])/1e6)
 
-    # Match shape with image data for PB correction
-    if len(shape) == 4:
-        beam_I = beam_I[:, :, None, None]
+    ia.close()
 
     pbcor_imgdata = imgdata/beam_I
 
@@ -108,7 +101,7 @@ def do_pb_corr(inpimage, pbthreshold=0, pbband='LBand'):
     ia.close()
 
 
-def science_image(vis, cell, robust, imsize, wprojplanes, niter, threshold, multiscale, nterms, gridder, deconvolver, restoringbeam, stokes, mask, rmsmap, outlierfile, keepmms, pbthreshold, pbband):
+def science_image(vis, spw, cell, robust, imsize, wprojplanes, niter, threshold, multiscale, nterms, gridder, deconvolver, specmode, uvtaper, restfreq, restoringbeam, stokes, mask, rmsmap, outlierfile, keepmms, pbthreshold, pbband, fitspw):
 
     visbase = os.path.split(vis.rstrip('/ '))[1] # Get only vis name, not entire path
     extn = '.ms' if keepmms==False else '.mms'
@@ -126,14 +119,22 @@ def science_image(vis, cell, robust, imsize, wprojplanes, niter, threshold, mult
     else:
         imname = imagename + '.image'
 
+    #Disable parallel processing if cube imaging being done (CASA bug)
+    parallel = True
+    if specmode == 'cube':
+        parallel = False
+        if fitspw != '':
+            spw = fitspw
+
     if not os.path.exists(imname):
 
         tclean(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
-            imsize=imsize, cell=cell, stokes=stokes, gridder=gridder, specmode='mfs',
+            imsize=imsize, cell=cell, stokes=stokes, gridder=gridder, specmode=specmode,
             wprojplanes = wprojplanes, deconvolver = deconvolver, restoration=True,
             weighting='briggs', robust = robust, niter=niter, scales=multiscale,
+            restfreq=restfreq, uvtaper = uvtaper, spw=spw,
             threshold=threshold, nterms=nterms, calcpsf=True, mask=mask, outlierfile=outlierfile,
-            pblimit=-1, restoringbeam=restoringbeam, parallel = True)
+            pbcor=False, pblimit=-1, restoringbeam=restoringbeam, parallel = parallel)
 
     else:
         logger.warning('Output image "{0}" already exists. Skipping tclean step and applying pb correction.'.format(imname))
@@ -151,5 +152,6 @@ def science_image(vis, cell, robust, imsize, wprojplanes, niter, threshold, mult
 if __name__ == '__main__':
 
     args,params = bookkeeping.get_imaging_params()
+    params['fitspw'] = config_parser.get_key(args['config'], "image", "fitspw")
     science_image(**params)
     bookkeeping.rename_logs(logfile)
