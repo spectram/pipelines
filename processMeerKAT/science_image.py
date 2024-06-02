@@ -101,7 +101,9 @@ def do_pb_corr(inpimage, pbthreshold=0, pbband='LBand'):
     ia.close()
 
 
-def science_image(vis, spw, cell, robust, imsize, wprojplanes, niter, threshold, multiscale, nterms, gridder, deconvolver, specmode, uvtaper, restfreq, restoringbeam, stokes, mask, rmsmap, outlierfile, keepmms, pbthreshold, pbband, fitspw):
+def science_image(vis, spw, cell, robust, imsize, wprojplanes, niter, threshold, multiscale, nterms, \
+    gridder, deconvolver, specmode, uvtaper, restfreq, restoringbeam, stokes, mask, rmsmap, outlierfile, \
+        keepmms, pbthreshold, pbband, fitspw, imspw):
 
     visbase = os.path.split(vis.rstrip('/ '))[1] # Get only vis name, not entire path
     extn = '.ms' if keepmms==False else '.mms'
@@ -123,8 +125,8 @@ def science_image(vis, spw, cell, robust, imsize, wprojplanes, niter, threshold,
     parallel = True
     if specmode == 'cube':
         parallel = False
-        if fitspw != '':
-            spw = fitspw
+        if imspw != '':
+            spw = imspw
 
     if not os.path.exists(imname):
 

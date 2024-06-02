@@ -76,12 +76,16 @@ def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
     if os.path.exists(outimage):
         logger.info('Image "{0}" exists. Not overwriting, continuing to next loop.'.format(outimage))
     else:
+        if deconvolver[loop]=='asp':
+            cleanmask=''
+        else:
+            cleanmask=pixmask
         tclean(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
             imsize=imsize[loop], cell=cell[loop], stokes='I', gridder=gridder[loop],
             wprojplanes = wprojplanes[loop], deconvolver = deconvolver[loop], restoration=True,
             weighting='briggs', robust = robust[loop], niter=niter[loop], outlierfile=outlierfile,
             threshold=threshold[loop], nterms=nterms[loop], calcpsf=calcpsf, # cfcache = cfcache,
-            pblimit=-1, mask=pixmask, parallel = True)
+            pblimit=-1, mask=cleanmask, parallel = True)
 
 
 if __name__ == '__main__':
