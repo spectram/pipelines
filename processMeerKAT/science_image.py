@@ -155,5 +155,6 @@ if __name__ == '__main__':
 
     args,params = bookkeeping.get_imaging_params()
     params['fitspw'] = config_parser.get_key(args['config'], "image", "fitspw")
+    params['imspw'] = config_parser.get_key(args['config'], "image", "imspw")
     science_image(**params)
     bookkeeping.rename_logs(logfile)

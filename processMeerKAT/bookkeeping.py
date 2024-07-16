@@ -128,7 +128,7 @@ def get_selfcal_params():
     if params['dopol'] and 'G' in params['gaintype']:
         logger.warning("dopol is True, but gaintype includes 'G'. Use gaintype='T' for polarisation on linear feeds (e.g. MeerKAT).")
 
-    single_args = ['nloops','loop','discard_nloops','outlier_threshold','outlier_radius'] #need to be 1 long (i.e. not a list)
+    single_args = ['nloops','loop','discard_nloops','outlier_threshold','outlier_radius','atrous_do','flag_maxsize_bm'] #need to be 1 long (i.e. not a list)
     gaincal_args = ['solint','calmode','gaintype','flag'] #need to be nloops long
     list_args = ['imsize'] #allowed to be lists of lists
 
@@ -180,7 +180,8 @@ def get_selfcal_params():
 
     return args,params
 
-def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,outlier_threshold,outlier_radius,threshold,step):
+def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,\
+    outlier_threshold,outlier_radius,threshold,step):
 
     from casatools import msmetadata,quanta
     from read_ms import check_spw
@@ -285,8 +286,9 @@ def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,o
                 sys.exit(1)
         elif step == 'bdsf':
             thresh = threshold[loop]
-
-    return imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,thresh,maskfile,targetfield,sky_model_radius
+    
+    return imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,\
+        cfcache,thresh,maskfile,targetfield,sky_model_radius
 
 def rename_logs(logfile=''):
 
@@ -313,6 +315,7 @@ def get_imaging_params():
     params['spw'] = taskvals['crosscal']['spw']
     params.pop('fitspw')
     params.pop('fitorder')
+    params.pop('imspw')
 
     #Rename the masks that were already used
     if params['outlierfile'] != '' and os.path.exists(params['outlierfile']):

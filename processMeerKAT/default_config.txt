@@ -76,6 +76,8 @@ gaintype = 'G'                    # Use 'T' for polarisation on linear feeds (e.
 discard_nloops = 0                # Discard this many selfcal solutions (e.g. from quick and dirty image) during subsequent loops (only considers when calmode !='')
 outlier_threshold = 0.0           # S/N values if >= 1.0, otherwise Jy
 outlier_radius = 0.0              # Radius in degrees for identifying outliers in RACS
+atrous_do = False
+flag_maxsize_bm = 25.0
 
 [image]
 cell = '2arcsec'
@@ -92,6 +94,7 @@ specmode = 'cube'                 # 'mfs' for continuum image, 'cube' for spectr
 uvtaper = '10arcsec'
 restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH)
 fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub, and SPW to select for imaging when specmode='cube'
+imspw = ''
 fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub
 restoringbeam = '10arcsec'
 stokes = 'I'
