@@ -43,10 +43,10 @@ def symlink_psf(imagenames,loop):
 
 def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojplanes, niter, threshold, uvrange, nterms,
                   gridder, deconvolver, solint, calmode, discard_nloops, gaintype, outlier_threshold, outlier_radius, flag, \
-                      atrous_do,flag_maxsize_bm):
+                      atrous_do,flag_maxsize_bm, scales, usermask):
 
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,_,_,_,_ = bookkeeping.get_selfcal_args(vis,loop,nloops,nterms,\
-        deconvolver,discard_nloops,calmode,outlier_threshold,outlier_radius,threshold,step='tclean')
+        deconvolver,discard_nloops,calmode,outlier_threshold,outlier_radius,threshold,usermask=usermask,step='tclean')
     calcpsf = True
 
     if os.path.exists(outlierfile) and open(outlierfile).read() == '':
@@ -83,7 +83,7 @@ def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
             wprojplanes = wprojplanes[loop], deconvolver = deconvolver[loop], restoration=True,
             weighting='briggs', robust = robust[loop], niter=niter[loop], outlierfile=outlierfile,
             threshold=threshold[loop], nterms=nterms[loop], calcpsf=calcpsf, # cfcache = cfcache,
-            pblimit=-1, mask=pixmask, parallel = True)
+            pblimit=-1, mask=pixmask, parallel = True, scales=scales)
 
 if __name__ == '__main__':
 

@@ -35,11 +35,11 @@ logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=lo
 
 def selfcal_part2(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojplanes, niter, threshold, uvrange,
                   nterms, gridder, deconvolver, solint, calmode, discard_nloops, gaintype, outlier_threshold, outlier_radius, flag,\
-                      atrous_do,flag_maxsize_bm):
+                      atrous_do,flag_maxsize_bm, scales, usermask):
 
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,_,_,_,_ = \
         bookkeeping.get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,outlier_threshold,\
-            outlier_radius,threshold,step='predict')
+            outlier_radius,threshold,usermask=usermask,step='predict')
         
     if os.path.exists(outlierfile) and open(outlierfile).read() == '':
         outlierfile = ''
@@ -54,17 +54,17 @@ def selfcal_part2(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
                     weighting='briggs', robust = robust[loop], threshold=threshold[loop],
                     nterms=nterms[loop], pblimit=-1, mask=pixmask, outlierfile=outlierfile,
                     niter=0, savemodel='modelcolumn', restart=True, # cfcache=cfcache,
-                    restoration=False, calcpsf=False, calcres=False, parallel = False)
+                    restoration=False, calcpsf=False, calcres=False, parallel = False, scales=scales)
 
             solnorm = 'a' in calmode[loop]
             normtype='median' #if solnorm else 'mean'
-
-            gaincal(vis=vis, caltable=caltable, selectdata=True, refant = refant, solint=solint[loop], solnorm=solnorm,
-                    normtype=normtype,
-                    gaintype=gaintype[loop],
-                    uvrange=uvrange[loop],
-                    gaintable=prev_caltables,
-                    calmode=calmode[loop], append=False, parang=False)
+            if loop < nloops:
+                gaincal(vis=vis, caltable=caltable, selectdata=True, refant = refant, solint=solint[loop], solnorm=solnorm,
+                        normtype=normtype,
+                        gaintype=gaintype[loop],
+                        uvrange=uvrange[loop],
+                        gaintable=prev_caltables,
+                        calmode=calmode[loop], append=False, parang=False)
     else:
         logger.warning("Skipping selfcal loop {0} since calmode == ''.".format(loop))
 
@@ -416,8 +416,9 @@ if __name__ == '__main__':
     args,params = bookkeeping.get_selfcal_params()
     loop = params['loop']
     selfcal_part2(**params)
-    rmsmap,outlierfile = find_outliers(**params,step='bdsf')
-    pixmask = mask_image(**params)
+    if loop < params['nloops']:
+        rmsmap,outlierfile = find_outliers(**params,step='bdsf')
+        pixmask = mask_image(**params)
 
     loop += 1
 
