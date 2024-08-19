@@ -763,7 +763,13 @@ def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_le
             init_scripts = scripts[:idx+1]
             final_scripts = scripts[idx+1:]
             init_scripts.extend(['selfcal_part1.sbatch','selfcal_part2.sbatch']*(selfcal_loops-1))
-            init_scripts.append('selfcal_part1.sbatch')
+            if 'run_sofia.sbatch' in scripts and scripts.index('run_sofia.sbatch')==idx+1:
+                final_scripts.remove('run_sofia.sbatch')
+                init_scripts.append('run_sofia.sbatch')
+                init_scripts.append('selfcal_part1.sbatch')
+                init_scripts.append('selfcal_part2.sbatch')
+            else:
+                init_scripts.append('selfcal_part1.sbatch')
             scripts = init_scripts + final_scripts
 
     command = 'sbatch'

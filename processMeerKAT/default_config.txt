@@ -26,7 +26,7 @@ reservation = ''
 modules = ['openmpi/4.0.3']
 verbose = False
 precal_scripts = [('calc_refant.py',False,''), ('partition.py',True,'')]
-postcal_scripts = [('concat.py',False,''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py',True,''), ('selfcal_part2.py',False,''), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', False, '')]
+postcal_scripts = [('concat.py',False,''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py',True,''), ('selfcal_part2.py',False,''), ('run_sofia.py', False, '/idia/software/containers/SoFiA2v2.5.1.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', False, '')]
 scripts = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
@@ -70,7 +70,7 @@ gridder = 'wproject'
 deconvolver = 'mtmfs'
 calmode = ['','p']                # '' to skip solving (will also exclude mask for this loop), 'p' for phase-only and 'ap' for amplitude and phase
 solint = ['','1min']
-scales = [0, 5, 10, 15]
+scales = []
 usermask=''
 uvrange = ''                      # uv range cutoff for gaincal
 flag = True                       # Flag residual column after selfcal?

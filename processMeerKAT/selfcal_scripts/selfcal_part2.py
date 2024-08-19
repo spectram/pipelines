@@ -44,9 +44,10 @@ def selfcal_part2(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
     if os.path.exists(outlierfile) and open(outlierfile).read() == '':
         outlierfile = ''
 
-    if calmode[loop] != '':
+    if calmode[loop] != '' or loop==nloops:
         if os.path.exists(caltable):
             logger.info('Caltable {0} exists. Not overwriting, continuing to next loop.'.format(caltable))
+            exit(0)
         else:
             tclean(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
                     imsize=imsize[loop], cell=cell[loop], stokes='I', gridder=gridder[loop],
@@ -102,13 +103,13 @@ def pybdsf(imbase,rmsfile,imagename,outimage,thresh,maskfile,cat,\
 
 def find_outliers(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojplanes, niter, threshold, uvrange, nterms,
                   gridder, deconvolver, solint, calmode, discard_nloops, gaintype, outlier_threshold, outlier_radius,\
-                      flag, atrous_do, flag_maxsize_bm, step):
+                      flag, atrous_do, flag_maxsize_bm, step, usermask, scales):
 
     local = locals()
     local.pop('step')
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,thresh,maskfile,\
         targetfield,sky_model_radius = bookkeeping.get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,\
-            calmode,outlier_threshold,outlier_radius,threshold,step)
+            calmode,outlier_threshold,outlier_radius,threshold,step=step, usermask=usermask)
     cat = imagename + ".catalog.fits"
     outlierfile_all = 'outliers.txt'
     fitsname = imagename + '.fits'
@@ -366,10 +367,10 @@ def find_outliers(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
 
 def mask_image(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojplanes, niter, threshold, uvrange, nterms, gridder,
                   deconvolver, solint, calmode, discard_nloops, gaintype, outlier_threshold, \
-                      outlier_radius, flag, atrous_do, flag_maxsize_bm, outlier_base='', outlier_image=''):
+                      outlier_radius, flag, atrous_do, flag_maxsize_bm, scales, usermask, outlier_base='', outlier_image=''):
 
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,thresh,maskfile,_,_ = bookkeeping.get_selfcal_args(vis,loop,nloops,nterms,\
-        deconvolver,discard_nloops,calmode,outlier_threshold,outlier_radius,threshold,step='mask')
+        deconvolver,discard_nloops,calmode,outlier_threshold,outlier_radius,threshold,usermask=usermask,step='mask')
 
     if outlier_base != '':
         maskfile = outlier_base + '.islmask'
@@ -416,11 +417,12 @@ if __name__ == '__main__':
     args,params = bookkeeping.get_selfcal_params()
     loop = params['loop']
     selfcal_part2(**params)
-    if loop < params['nloops']:
-        rmsmap,outlierfile = find_outliers(**params,step='bdsf')
-        pixmask = mask_image(**params)
+    #if loop < params['nloops']:
+    rmsmap,outlierfile = find_outliers(**params,step='bdsf')
+    pixmask = mask_image(**params)
 
     loop += 1
+    config_parser.overwrite_config(args['config'], conf_dict={'loop' : loop},  conf_sec='selfcal')
 
     if config_parser.has_section(args['config'], 'image'):
         if config_parser.get_key(args['config'], 'image', 'specmode') != 'cube':
@@ -428,6 +430,5 @@ if __name__ == '__main__':
             config_parser.overwrite_config(args['config'], conf_dict={'mask' : "'{0}'".format(pixmask)}, conf_sec='image')
         config_parser.overwrite_config(args['config'], conf_dict={'rmsmap' : "'{0}'".format(rmsmap)}, conf_sec='image')
         config_parser.overwrite_config(args['config'], conf_dict={'outlierfile' : "'{0}'".format(outlierfile)}, conf_sec='image')
-    config_parser.overwrite_config(args['config'], conf_dict={'loop' : loop},  conf_sec='selfcal')
 
     bookkeeping.rename_logs(logfile)

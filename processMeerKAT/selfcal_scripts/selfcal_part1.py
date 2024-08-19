@@ -77,6 +77,7 @@ def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
 
     if os.path.exists(outimage):
         logger.info('Image "{0}" exists. Not overwriting, continuing to next loop.'.format(outimage))
+        exit(0)
     else:
         tclean(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
             imsize=imsize[loop], cell=cell[loop], stokes='I', gridder=gridder[loop],

@@ -130,7 +130,7 @@ def get_selfcal_params():
 
     single_args = ['nloops','loop','discard_nloops','outlier_threshold','outlier_radius','atrous_do','flag_maxsize_bm','usermask'] #need to be 1 long (i.e. not a list)
     gaincal_args = ['solint','calmode','gaintype','flag'] #need to be nloops long
-    list_args = ['imsize','scales'] #allowed to be lists of lists
+    list_args = ['imsize'] #allowed to be lists of lists
 
     for arg in single_args:
         if arg in other_params:
@@ -161,13 +161,13 @@ def get_selfcal_params():
 
         elif type(params[arg]) is not list:
             if arg in gaincal_args:
-                params[arg] = [params[arg]] * (params['nloops'])
+                params[arg] = [params[arg]] * (params['nloops'] + 1) # +1 is a Hacky fix to avoid indexing errors
             else:
                 params[arg] = [params[arg]] * (params['nloops'] + 1)
 
     for arg in other_params:
         #By this point params[arg] will be a list
-        if arg in gaincal_args and len(params[arg]) != params['nloops']:
+        if arg in gaincal_args and len(params[arg]) != params['nloops']+1:
             logger.error("Parameter '{0}' in '{1}' is the wrong length. It is {2} long but must be 'nloops' ({3}) long or a single value (not a list).".format(arg,args['config'],len(params[arg]),params['nloops']))
             exit = True
 
@@ -243,6 +243,19 @@ def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,\
     if step in ['tclean','predict','sky'] and ((loop == 0 and not os.path.exists(pixmask)) or (0 < loop < nloops and calmode[loop] == '')):
         pixmask = ''
     if (loop >= nloops) and (usermask!=''):
+        if '.fits' in usermask:
+            from casatasks import importfits, imhead
+            cenfreq = imhead(imagename=imbase%(loop-1)+'.image', mode="get", hdkey="crval4")
+            if cenfreq['unit'] == 'Hz':
+                cenfreq_str= str(round(cenfreq['value']/1e9,4))+ 'GHz'  #convert Hz to GHz
+            else:
+                print("CUNIT4 is not Hz?",cenfreq)
+            immask=usermask.replace('.fits','.im')
+            importfits(fitsimage=usermask, imagename=immask, defaultaxes=True, \
+                defaultaxesvalues=['','',cenfreq_str,'I'], overwrite=True) 
+            usermask=immask
+            config_parser.overwrite_config(args['config'], conf_dict={'usermask' : '{0}'.format(usermask)}, conf_sec='selfcal')
+
         pixmask=usermask
 
     #Check no missing caltables
