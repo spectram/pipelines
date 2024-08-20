@@ -85,13 +85,13 @@ def main(args,taskvals):
     run_sofia(paramfile)
     
 if __name__ == '__main__':
-        
-    bookkeeping.run_script(main)
     
     args = config_parser.parse_args()
     taskvals, config = config_parser.parse_config(args['config'])
+    bookkeeping.run_script(main)
+    
     visname = config_parser.validate_args(taskvals, "data", "vis", str)
-    loop = config_parser.validate_args(taskvals, "selfcal", "loop", int, default=2)
+    loop = config_parser.validate_args(taskvals, "selfcal", "loop", int)
     imagename = f"{visname.split('.')[0]}.{visname.split('.')[2]}_im_{loop-1}"
       
     config_parser.overwrite_config(args['config'], conf_dict={'usermask' : "'{0}_mask.fits'".format(imagename)}, conf_sec='selfcal')    
