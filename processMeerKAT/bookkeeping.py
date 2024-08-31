@@ -255,7 +255,7 @@ def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,\
                 defaultaxesvalues=['','',cenfreq_str,'I'], overwrite=True) 
             usermask=immask
             args = config_parser.parse_args()
-            config_parser.overwrite_config(args['config'], conf_dict={'usermask' : '{0}'.format(usermask)}, conf_sec='selfcal')
+            config_parser.overwrite_config(args['config'], conf_dict={'usermask' : '"{0}"'.format(usermask)}, conf_sec='selfcal')
 
         pixmask=usermask
 
