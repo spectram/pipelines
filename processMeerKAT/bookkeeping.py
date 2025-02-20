@@ -130,7 +130,7 @@ def get_selfcal_params():
 
     single_args = ['nloops','loop','discard_nloops','outlier_threshold','outlier_radius','atrous_do','flag_maxsize_bm','usermask'] #need to be 1 long (i.e. not a list)
     gaincal_args = ['solint','calmode','gaintype','flag'] #need to be nloops long
-    list_args = ['imsize'] #allowed to be lists of lists
+    list_args = ['imsize', 'scales'] #allowed to be lists of lists
 
     for arg in single_args:
         if arg in other_params:
