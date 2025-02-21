@@ -84,7 +84,7 @@ def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
             wprojplanes = wprojplanes[loop], deconvolver = deconvolver[loop], restoration=True,
             weighting='briggs', robust = robust[loop], niter=niter[loop], outlierfile=outlierfile,
             threshold=threshold[loop], nterms=nterms[loop], calcpsf=calcpsf, # cfcache = cfcache,
-            pblimit=-1, mask=pixmask, parallel = True, scales=scales)
+            pblimit=-1, mask=pixmask, parallel = True, scales=scales[loop])
 
 if __name__ == '__main__':
 
