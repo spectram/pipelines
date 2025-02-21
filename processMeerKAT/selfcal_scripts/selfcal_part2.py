@@ -55,7 +55,7 @@ def selfcal_part2(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
                     weighting='briggs', robust = robust[loop], threshold=threshold[loop],
                     nterms=nterms[loop], pblimit=-1, mask=pixmask, outlierfile=outlierfile,
                     niter=0, savemodel='modelcolumn', restart=True, # cfcache=cfcache,
-                    restoration=False, calcpsf=False, calcres=False, parallel = False, scales=scales)
+                    restoration=False, calcpsf=False, calcres=False, parallel = False, scales=scales[loop])
 
             solnorm = 'a' in calmode[loop]
             normtype='median' #if solnorm else 'mean'
