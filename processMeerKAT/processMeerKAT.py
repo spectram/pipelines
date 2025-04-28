@@ -36,11 +36,11 @@ logging.Formatter.converter = gmtime
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s")
 
-#Set global limits for current ilifu cluster configuration
-TOTAL_NODES_LIMIT = 59
-CPUS_PER_NODE_LIMIT = 32
+#Set global limits for current pawsey cluster configuration
+TOTAL_NODES_LIMIT = 1592
+CPUS_PER_NODE_LIMIT = 64
 NTASKS_PER_NODE_LIMIT = CPUS_PER_NODE_LIMIT
-MEM_PER_NODE_GB_LIMIT = 251 #257568 MB
+MEM_PER_NODE_GB_LIMIT = 230 #257568 MB
 MEM_PER_NODE_GB_LIMIT_HIGHMEM = 1508 #1544192 MB
 
 #Set global values for paths and file names
@@ -62,10 +62,11 @@ SELFCAL_CONFIG_KEYS = ['nloops','loop','cell','robust','imsize','wprojplanes','n
 IMAGING_CONFIG_KEYS = ['cell', 'robust', 'imsize', 'wprojplanes', 'niter', 'threshold', 'multiscale', 'nterms', 'gridder', 'deconvolver', 'specmode', 'uvtaper', 'restfreq', 'fitspw', 'fitorder', 'restoringbeam', 'stokes', 'mask', 'rmsmap','outlierfile', 'pbthreshold', 'pbband','imspw']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
-CONTAINER = '/idia/software/containers/casa-6.6.0-modular.sif'
-MPI_WRAPPER = 'mpirun'
+CONTAINER = '/software/projects/pawsey1164/ssankar/containers/casa-stable-v6.6.5-31-py3.10-2025-02-20.sif'
+MPI_WRAPPER = 'srun'
 PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts run before calibration at top level directory when nspw > 1
-POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''),('science_image.py', True, '')] #Scripts run after calibration at top level directory when nspw > 1
+POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''), \
+('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', True, '')] #Scripts run after calibration at top level directory when nspw > 1
 SCRIPTS = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
@@ -183,20 +184,20 @@ def parse_args():
                             help="Distribute tasks of this block size before moving onto next node [default: 1; max: ntasks-per-node].")
     parser.add_argument("-m","--mem", metavar="num", required=False, type=int, default=MEM_PER_NODE_GB_LIMIT,
                         help="Use this many GB of memory (per node) for threadsafe scripts [default: {0}; max: {0}].".format(MEM_PER_NODE_GB_LIMIT))
-    parser.add_argument("-p","--partition", metavar="name", required=False, type=str, default="Main", help="SLURM partition to use [default: 'Main'].")
+    parser.add_argument("-p","--partition", metavar="name", required=False, type=str, default="work", help="SLURM partition to use [default: 'Main'].")
     parser.add_argument("-T","--time", metavar="time", required=False, type=str, default="12:00:00", help="Time limit to use for all jobs, in the form d-hh:mm:ss [default: '12:00:00'].")
     parser.add_argument("-S","--scripts", action='append', nargs=3, metavar=('script','threadsafe','container'), required=False, type=parse_scripts, default=SCRIPTS,
                         help="Run pipeline with these scripts, in this order, using these containers (3rd value - empty string to default to [-c --container]). Is it threadsafe (2nd value)?")
     parser.add_argument("-b","--precal_scripts", action='append', nargs=3, metavar=('script','threadsafe','container'), required=False, type=parse_scripts, default=PRECAL_SCRIPTS, help="Same as [-S --scripts], but run before calibration.")
     parser.add_argument("-a","--postcal_scripts", action='append', nargs=3, metavar=('script','threadsafe','container'), required=False, type=parse_scripts, default=POSTCAL_SCRIPTS, help="Same as [-S --scripts], but run after calibration.")
-    parser.add_argument("--modules", nargs='*', metavar='module', required=False, default=['openmpi/4.0.3'], help="Load these modules within each sbatch script.")
+    parser.add_argument("--modules", nargs='*', metavar='module', required=False, default=['singularity/4.1.0-mpi'], help="Load these modules within each sbatch script.")
     parser.add_argument("-w","--mpi_wrapper", metavar="path", required=False, type=str, default=MPI_WRAPPER,
                         help="Use this mpi wrapper when calling threadsafe scripts [default: '{0}'].".format(MPI_WRAPPER))
     parser.add_argument("-c","--container", metavar="path", required=False, type=str, default=CONTAINER, help="Use this container when calling scripts [default: '{0}'].".format(CONTAINER))
     parser.add_argument("-n","--name", metavar="unique", required=False, type=str, default='', help="Unique name to give this pipeline run (e.g. 'run1_'), appended to the start of all job names. [default: ''].")
     parser.add_argument("-d","--dependencies", metavar="list", required=False, type=str, default='', help="Comma-separated list (without spaces) of SLURM job dependencies (only used when nspw=1). [default: ''].")
     parser.add_argument("-e","--exclude", metavar="nodes", required=False, type=str, default='', help="SLURM worker nodes to exclude [default: ''].")
-    parser.add_argument("-A","--account", metavar="group", required=False, type=str, default='b03-idia-ag', help="SLURM accounting group to use (e.g. 'b05-pipelines-ag' - check 'sacctmgr show user $USER cluster=ilifu-slurm20 -s format=account%%30') [default: 'b03-idia-ag'].")
+    parser.add_argument("-A","--account", metavar="group", required=False, type=str, default='', help="SLURM accounting group to use (e.g. 'b05-pipelines-ag' - check 'sacctmgr show user $USER cluster=ilifu-slurm20 -s format=account%%30')")
     parser.add_argument("-r","--reservation", metavar="name", required=False, type=str, default='', help="SLURM reservation to use. [default: ''].")
 
     parser.add_argument("-l","--local", action="store_true", required=False, default=False, help="Build config file locally (i.e. without calling srun) [default: False].")
@@ -304,20 +305,20 @@ def validate_args(args,config,parser=None):
         msg = "The value of [-P --plane] cannot be greater than the tasks per node [-t --ntasks-per-node] ({0}). You input {1}.".format(args['ntasks_per_node'],args['plane'])
         raise_error(config, msg, parser)
 
-    if args['account'] not in ['b03-idia-ag','b05-pipelines-ag']:
-        from platform import node
-        if 'slurm-login' in node() or 'slwrk' in node() or 'compute' in node():
-            accounts=os.popen("for f in $(sacctmgr show user $USER --noheader cluster=ilifu-slurm20 -s format=account%30); do echo -n $f,; done").read()[:-1].split(',')
-            if args['account'] not in accounts:
-                msg = "Accounting group '{0}' not recognised. Please select one of the following from your groups: {1}.".format(args['account'],accounts)
-                for account in accounts:
-                    if args['account'] in account:
-                        msg += ' Perhaps you meant accounting group "{0}".'.format(account)
-                        break
-                raise_error(config, msg, parser)
-        else:
-            msg = "Accounting group '{0}' not recognised. You're not using a SLURM node, so cannot query your accounts.".format(args['account'])
-            raise_error(config, msg, parser)
+    # if args['account'] not in ['b03-idia-ag','b05-pipelines-ag']:
+    #     from platform import node
+    #     if 'slurm-login' in node() or 'slwrk' in node() or 'compute' in node():
+    #         accounts=os.popen("for f in $(sacctmgr show user $USER --noheader cluster=ilifu-slurm20 -s format=account%30); do echo -n $f,; done").read()[:-1].split(',')
+    #         if args['account'] not in accounts:
+    #             msg = "Accounting group '{0}' not recognised. Please select one of the following from your groups: {1}.".format(args['account'],accounts)
+    #             for account in accounts:
+    #                 if args['account'] in account:
+    #                     msg += ' Perhaps you meant accounting group "{0}".'.format(account)
+    #                     break
+    #             raise_error(config, msg, parser)
+    #     else:
+    #         msg = "Accounting group '{0}' not recognised. You're not using a SLURM node, so cannot query your accounts.".format(args['account'])
+    #         raise_error(config, msg, parser)
 
     if args['reservation'] != '':
         from platform import node
@@ -334,7 +335,8 @@ def validate_args(args,config,parser=None):
             msg = "Reservation '{0}' not recognised. You're not using a SLURM node, so cannot query your accounts.".format(args['reservation'])
             raise_error(config, msg, parser)
 
-def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTAINER,casa_script=False,logfile=True,plot=False,SPWs='',nspw=1):
+def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTAINER,\
+                  casa_script=False,logfile=True,plot=False,SPWs='',nspw=1, cpus=1):
 
     """Write bash command to call a script (with args) directly with srun, or within sbatch file, optionally via CASA.
 
@@ -388,7 +390,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
     if casa_script:
         params['casa_call'] = "casa --nologger --nogui {casa_log} -c".format(**params)
     else:
-        params['casa_call'] = 'python'
+        params['casa_call'] = 'python3'
 
     if arrayJob:
         command += """#Iterate over SPWs in job array, launching one after the other
@@ -398,7 +400,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
 
         """ % SPWs.replace(',',' ').replace(SPW_PREFIX,'')
 
-    command += "{mpi_wrapper} singularity exec {container} {plot_call} {casa_call} {script} {args}".format(**params)
+    command += "{mpi_wrapper} -c {cpus} singularity exec {container} {plot_call} {casa_call} {script} {args}".format(**params)
 
     if arrayJob:
         command += '\ncd ..\n'
@@ -407,7 +409,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
 
 
 def write_sbatch(script,args,nodes=1,tasks=16,mem=MEM_PER_NODE_GB_LIMIT,name="job",runname='',plane=1,exclude='',mpi_wrapper=MPI_WRAPPER,container=CONTAINER,
-                partition="Main",time="12:00:00",casa_script=False,SPWs='',nspw=1,account='b03-idia-ag',reservation='',modules=[],justrun=False):
+                partition="work",time="12:00:00",casa_script=False,SPWs='',nspw=1,account='',reservation='',modules=[],justrun=False):
 
     """Write a SLURM sbatch file calling a certain script (and args) with a particular configuration.
 
@@ -463,10 +465,12 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=MEM_PER_NODE_GB_LIMIT,name="jo
     params = locals()
     params['LOG_DIR'] = LOG_DIR
 
-    #Use multiple CPUs for tclean and paratition scripts
+    #Use multiple CPUs for tclean and partition scripts
     params['cpus'] = 1
-    if 'tclean' in script or 'selfcal' in script or 'partition' in script or 'image' in script:
-        params['cpus'] = int(CPUS_PER_NODE_LIMIT/tasks)
+    if 'tclean' in script or 'selfcal' in script or 'image' in script or 'flag' in script or 'partition' in script:
+        cpus = int(CPUS_PER_NODE_LIMIT/tasks)
+        params['cpus'] = cpus
+        
     #hard-code for 2/4 polarisations
     if 'partition' in script:
         dopol = config_parser.get_key(TMP_CONFIG, 'run', 'dopol')
@@ -496,7 +500,8 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=MEM_PER_NODE_GB_LIMIT,name="jo
     if nconcurrent > nspw:
         nconcurrent = nspw
 
-    params['command'] = write_command(script,args,name=name,mpi_wrapper=mpi_wrapper,container=container,casa_script=casa_script,plot=plot,SPWs=SPWs,nspw=nspw)
+    params['command'] = write_command(script,args,name=name,mpi_wrapper=mpi_wrapper,container=container,\
+                                      casa_script=casa_script,plot=plot,SPWs=SPWs,nspw=nspw, cpus=params['cpus'])
     if 'partition' in script and ',' in SPWs and nspw > 1:
         params['ID'] = '%A_%a'
         params['array'] = '\n#SBATCH --array=0-{0}%{1}'.format(nspw-1,nconcurrent)
@@ -508,6 +513,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=MEM_PER_NODE_GB_LIMIT,name="jo
 
     if 'selfcal' in script or 'image' in script:
         params['command'] = 'ulimit -n 16384\n' + params['command']
+        params['partition'] = 'long'
 
     params['modules'] = ''
     if len(modules) > 0:
@@ -898,7 +904,7 @@ def write_bash_job_script(master,filename,extn,do,purpose,dir='jobScripts',echo=
     if echo:
         master.write('echo Run ./{0}.sh to {1}.\n'.format(filename,purpose))
 
-def srun(arg_dict,qos=True,time=10,mem=4):
+def srun(arg_dict,qos=False,time=10,mem=4):
 
     """Return srun call, with certain parameters appended.
 
@@ -928,7 +934,7 @@ def srun(arg_dict,qos=True,time=10,mem=4):
 
     return call
 
-def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scripts=0, mpi_wrapper=MPI_WRAPPER, nodes=8, ntasks_per_node=4, mem=MEM_PER_NODE_GB_LIMIT,plane=1, partition='Main',
+def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scripts=0, mpi_wrapper=MPI_WRAPPER, nodes=8, ntasks_per_node=4, mem=MEM_PER_NODE_GB_LIMIT,plane=1, partition='work',
                time='12:00:00', submit=False, name='', verbose=False, quiet=False, dependencies='', exclude='', account='b03-idia-ag', reservation='', modules=[], timestamp='', justrun=False):
 
     """Write a series of sbatch job files to calibrate a CASA MeasurementSet.
@@ -956,7 +962,7 @@ def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scri
     plane : int, optional
         Distrubute tasks for this job using this block size before moving onto next node.
     partition : str, optional
-        SLURM partition to use (default: "Main").
+        SLURM partition to use (default: "work").
     time : str, optional
         Time limit to use for all jobs, in the form d-hh:mm:ss.
     submit : bool, optional

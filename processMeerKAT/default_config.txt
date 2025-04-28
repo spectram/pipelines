@@ -12,21 +12,21 @@ extrafields = ''
 nodes = 1
 ntasks_per_node = 8
 plane = 1
-mem = 232                         # Use this many GB of memory (per node)
+mem = 230                         # Use this many GB of memory (per node)
 partition = 'Main'                # SLURM partition to use
 exclude = ''                      # SLURM nodes to exclude
 time = '12:00:00'
 submit = False
-container = '/idia/software/containers/casa-6.6.0-modular.sif'
-mpi_wrapper = 'mpirun'
+container = '/software/projects/pawsey1164/ssankar/containers/casa-stable-v6.6.5-31-py3.10-2025-02-20.sif'
+mpi_wrapper = 'srun'
 name = ''
 dependencies = ''
-account = 'b03-idia-ag'
+account = ''
 reservation = ''
-modules = ['openmpi/4.0.3']
+modules = ['singularity/4.1.0-mpi']
 verbose = False
 precal_scripts = [('calc_refant.py',False,''), ('partition.py',True,'')]
-postcal_scripts = [('concat.py',False,''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py',True,''), ('selfcal_part2.py',False,''), ('run_sofia.py', False, '/idia/software/containers/SoFiA2v2.5.1.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', False, '')]
+postcal_scripts = [('concat.py',False,''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py',True,''), ('selfcal_part2.py',False,''), ('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', False, '')]
 scripts = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
@@ -57,48 +57,48 @@ badfreqranges = [ '933~960MHz',   # List of bad frequency ranges (to flag)
                   '1524~1630MHz']
 
 [selfcal]
-nloops = 2                        # Number of clean + bdsf loops.
+nloops = 3                        # Number of clean + bdsf loops.
 loop = 0                          # If nonzero, adds this number to nloops to name images or continue previous run
 cell = '1.5arcsec'
 robust = -0.5
 imsize = [6144, 6144]
 wprojplanes = 512
-niter = [10000, 50000, 50000]
-threshold = ['0.5mJy', 10, 10]    # After loop 0, S/N values if >= 1.0, otherwise Jy
-nterms = 2                        # Number of taylor terms
+niter = [10000, 50000, 80000, 1000000]
+threshold = ['0.5mJy', 10, 5, 3]  # After loop 0, S/N values if >= 1.0, otherwise Jy
+nterms = 1                        # Number of taylor terms
 gridder = 'wproject'
-deconvolver = 'mtmfs'
-calmode = ['','p']                # '' to skip solving (will also exclude mask for this loop), 'p' for phase-only and 'ap' for amplitude and phase
-solint = ['','1min']
-scales = []
-usermask=''
+deconvolver = 'multiscale'
+calmode = ['','p','ap','']                # '' to skip solving (will also exclude mask for this loop), 'p' for phase-only and 'ap' for amplitude and phase
+solint = ['','1min','10min','']
+scales = [0,5,10,15]
+usermask = ''
 uvrange = ''                      # uv range cutoff for gaincal
 flag = True                       # Flag residual column after selfcal?
 gaintype = 'G'                    # Use 'T' for polarisation on linear feeds (e.g. MeerKAT)
 discard_nloops = 0                # Discard this many selfcal solutions (e.g. from quick and dirty image) during subsequent loops (only considers when calmode !='')
 outlier_threshold = 0.0           # S/N values if >= 1.0, otherwise Jy
 outlier_radius = 0.0              # Radius in degrees for identifying outliers in RACS
-atrous_do = False
-flag_maxsize_bm = 25.0
+atrous_do = True
+flag_maxsize_bm = 30.0
 
 [image]
 cell = '2arcsec'
 robust = 0.0
-imsize = [1500, 1500]
+imsize = [2048, 2048]
 wprojplanes = 128
 niter = 50000
-threshold = '0.1mJy'              # S/N value if >= 1.0 and rmsmap != '', otherwise Jy
+threshold = '0.2mJy'              # S/N value if >= 1.0 and rmsmap != '', otherwise Jy
 multiscale = [0, 5, 10, 15]
 nterms = 2                        # Number of taylor terms
 gridder = 'wproject'
 deconvolver = 'multiscale'
 specmode = 'cube'                 # 'mfs' for continuum image, 'cube' for spectral-line image
-uvtaper = '10arcsec'
+uvtaper = ''
 restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH)
 fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub, and SPW to select for imaging when specmode='cube'
 imspw = ''
 fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub
-restoringbeam = '10arcsec'
+restoringbeam = ''
 stokes = 'I'
 pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
 pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"
