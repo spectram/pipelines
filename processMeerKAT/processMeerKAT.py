@@ -65,7 +65,7 @@ SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_sc
 CONTAINER = '/idia/software/containers/casa-6.6.0-modular.sif'
 MPI_WRAPPER = 'mpirun'
 PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts run before calibration at top level directory when nspw > 1
-POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''),('science_image.py', True, '')] #Scripts run after calibration at top level directory when nspw > 1
+POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''), ('run_sofia.py', False, '/idia/software/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', True, '')] #Scripts run after calibration at top level directory when nspw > 1
 SCRIPTS = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
