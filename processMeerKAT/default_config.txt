@@ -70,7 +70,7 @@ gridder = 'wproject'
 deconvolver = 'multiscale'
 calmode = ['','p','ap','']                # '' to skip solving (will also exclude mask for this loop), 'p' for phase-only and 'ap' for amplitude and phase
 solint = ['','1min','10min','']
-scales = [0,5,10,15]
+scales = [0,4,8]
 usermask = ''
 uvrange = ''                      # uv range cutoff for gaincal
 flag = True                       # Flag residual column after selfcal?
@@ -88,7 +88,7 @@ imsize = [2048, 2048]
 wprojplanes = 128
 niter = 1000
 threshold = '0.2mJy'              # S/N value if >= 1.0 and rmsmap != '', otherwise Jy
-multiscale = [0, 5, 10, 15]
+multiscale = [0, 5, 10]
 nterms = 1                        # Number of taylor terms
 gridder = 'wproject'
 deconvolver = 'multiscale'
