@@ -1,7 +1,7 @@
 #Copyright (C) 2022 Inter-University Institute for Data Intensive Astronomy
 #See processMeerKAT.py for license details.
 
-import os, sys, time
+import os, sys, time, re
 import config_parser
 import bookkeeping
 from shutil import copyfile
@@ -71,7 +71,8 @@ def main(args,taskvals):
 
     visname = config_parser.validate_args(taskvals, "data", "vis", str)
     loop = config_parser.validate_args(taskvals, "selfcal", "loop", int, default=2)
-    imagename = f"{visname.split('.')[0]}.{visname.split('.')[2]}_im_{loop-1}"
+    visbase = re.sub('\.\d+\.*\d*\~\d+\.*\d*[a-z,A-Z]?[Hz,hz,hZ,HZ]*\.','.',visname)
+    imagename = f"{visbase.split('.')[0]}.{visbase.split('.')[1]}_im_{loop-1}"
         
     #Copy default config to current location    
     paramfile=os.path.join(os.path.dirname(visname),'cont_sofmask.txt')
@@ -92,6 +93,7 @@ if __name__ == '__main__':
     
     visname = config_parser.validate_args(taskvals, "data", "vis", str)
     loop = config_parser.validate_args(taskvals, "selfcal", "loop", int)
-    imagename = f"{visname.split('.')[0]}.{visname.split('.')[2]}_im_{loop-1}"
+    visbase = re.sub('\.\d+\.*\d*\~\d+\.*\d*[a-z,A-Z]?[Hz,hz,hZ,HZ]*\.','.',visname)    
+    imagename = f"{visbase.split('.')[0]}.{visbase.split('.')[1]}_im_{loop-1}"
       
     config_parser.overwrite_config(args['config'], conf_dict={'usermask' : "'{0}_mask.fits'".format(imagename)}, conf_sec='selfcal')    
