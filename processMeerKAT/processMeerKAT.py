@@ -83,18 +83,47 @@ CONTAINER_PYTHON = {
     CONTAINER: '/opt/venv/bin/python3',
 }
 
-#Container-specific extra environment variables, passed to `singularity exec --env`.
-#idianext.sif's venv Python is linked against a spack-built OpenSSL newer than the
-#container's base-OS OpenSSL; without LD_PRELOAD forcing the venv's OpenSSL to load
-#first, `import ssl` (needed transitively by casatasks) fails with a symbol-version
-#mismatch (glibc resolves libcrypto's SONAME once, from whatever loads it first).
-#NOTE: the spack path below is specific to this build of idianext.sif and will need
-#updating if the container is rebuilt (spack installs are hash-suffixed).
+#idianext.sif's venv Python is linked against a spack-built OpenSSL newer than the container's
+#base-OS OpenSSL; without LD_PRELOAD forcing the venv's OpenSSL to load first, `import ssl`
+#(needed transitively by casatasks) fails with a symbol-version mismatch (glibc resolves
+#libcrypto's SONAME once, from whatever loads it first).
+#NOTE: the spack path below is specific to this build of idianext.sif and will need updating if
+#the container is rebuilt (spack installs are hash-suffixed).
 _IDIANEXT_OPENSSL_LIB = '/opt/spack/opt/spack/linux-zen2/openssl-3.4.1-kd6nwzlpilohkirzkrhioadlkvonnjkz/lib64'
+
+#idianext.sif is missing mpi4py, which casampi (casatasks' MPI client/server layer, used by
+#createmms=True and tclean(parallel=True)) requires to do real multi-task MPI parallelism.
+#Without it, every srun-launched task independently falls back to believing it's the sole
+#process, and multiple tasks race on the same output (e.g. FileExistsError). Fixed here without
+#rebuilding the container: a source build of mpi4py (NOT the bundled manylinux wheel, which
+#statically links its own MPI and never talks to Slurm's PMI/PALS) against idianext.sif's own
+#dynamic MPICH, which resolves libmpi.so.12 through Cray's ABI-compatibility shim
+#(lib-abi-mpich) at runtime -- see /software/projects/pawsey1164/ssankar/containers/idianext_mpi4py.
+_IDIANEXT_MPI4PY_DIR = '/software/projects/pawsey1164/ssankar/containers/idianext_mpi4py'
+
+#Container-specific extra environment variables, passed to `singularity exec --env`.
 CONTAINER_ENV = {
     CONTAINER: {
         'LD_PRELOAD': '{0}/libcrypto.so.3:{0}/libssl.so.3'.format(_IDIANEXT_OPENSSL_LIB),
+        #PYTHONPATH is otherwise set by the site's singularity module to just SCRIPT_DIR (so
+        #`import config_parser` etc. work) -- must be preserved here, since --env replaces
+        #rather than appends to the container's default.
+        'PYTHONPATH': '{0}:{1}'.format(_IDIANEXT_MPI4PY_DIR, SCRIPT_DIR),
+        #casampi's MPIEnvironment only attempts MPI initialisation if 'OMPI_COMM_WORLD_RANK' is
+        #present in the environment (an OpenMPI-only check; Setonix's srun launches via
+        #PMI/PALS, which never sets it). It's only checked for presence, not correctness, so
+        #pass through the real per-task rank Slurm already provides via $PMI_RANK. This must
+        #stay as the literal string '$PMI_RANK' (not expanded here) so each srun-launched task
+        #substitutes its own value at runtime.
+        'OMPI_COMM_WORLD_RANK': '$PMI_RANK',
     },
+}
+
+#Container-specific `singularity exec --bind` paths. idianext.sif's MPI (via Cray's PALS launcher)
+#needs to read its per-job rendezvous state from /var/spool/slurmd on the compute node, which
+#isn't bound into the container by the site's default bind list -- without it, MPI_Init aborts.
+CONTAINER_BINDS = {
+    CONTAINER: ['/var/spool/slurmd'],
 }
 
 MPI_WRAPPER = 'srun'
@@ -427,6 +456,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
         params['casa_call'] = CONTAINER_PYTHON.get(container, 'python3')
 
     params['env_flags'] = ''.join(' --env {0}={1}'.format(k, v) for k, v in CONTAINER_ENV.get(container, {}).items())
+    params['env_flags'] += ''.join(' --bind {0}'.format(b) for b in CONTAINER_BINDS.get(container, []))
 
     if arrayJob:
         command += """#Iterate over SPWs in job array, launching one after the other
@@ -535,17 +565,13 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         params['exclusive'] = ''
         max_cpus_per_task = max(1, int(CPUS_PER_NODE_LIMIT / tasks))
         node_mem_cap_gb = MEM_PER_NODE_GB_LIMIT_HIGHMEM if params['partition'] == 'HighMem' else MEM_PER_NODE_GB_LIMIT
-        if params['cpus'] == 1:
-            #This script wasn't given extra cpus by the parallelism heuristic above (usually
-            #because it's a single-task, non-thread-safe script) -- use the configured mem
-            #request to decide how many otherwise-idle cores to reserve for it instead.
-            mem_derived_cpus = math.ceil(min(params['mem'], node_mem_cap_gb) * 1024 / MEM_PER_CPU_MB_SHARED / tasks)
-            params['cpus'] = min(max(params['cpus'], mem_derived_cpus), max_cpus_per_task)
-        else:
-            #Parallelism heuristic already picked cpus-per-task for this script; only clamp to
-            #the node's core budget, and let mem below be derived from that (uncapped by the
-            #configured mem ceiling, which is meant for the single-task case above).
-            params['cpus'] = min(params['cpus'], max_cpus_per_task)
+        #Whatever cpus-per-task the parallelism heuristic above picked (which may be driven by
+        #something unrelated to memory, e.g. partition.py's polarisation count) may still be too
+        #few to satisfy the configured mem request under Setonix's shared-node ratio -- reserve
+        #whichever is larger: the heuristic's cpus, or enough (otherwise-idle) cores to unlock the
+        #configured memory. Never shrinks cpus below what the heuristic already chose.
+        mem_derived_cpus = math.ceil(min(params['mem'], node_mem_cap_gb) * 1024 / MEM_PER_CPU_MB_SHARED / tasks)
+        params['cpus'] = min(max(params['cpus'], mem_derived_cpus), max_cpus_per_task)
         params['mem'] = min(node_mem_cap_gb, int(params['cpus'] * tasks * MEM_PER_CPU_MB_SHARED / 1024))
 
     #Use xvfb for plotting scripts
