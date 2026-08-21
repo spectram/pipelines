@@ -26,7 +26,7 @@ def parse_config(filename):
     should represent task parameters and values respectively.
     """
 
-    config = configparser.SafeConfigParser(allow_no_value=True)
+    config = configparser.ConfigParser(allow_no_value=True)
     config.read(filename)
 
     # Build a nested dictionary with tasknames at the top level

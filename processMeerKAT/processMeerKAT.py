@@ -62,7 +62,28 @@ SELFCAL_CONFIG_KEYS = ['nloops','loop','cell','robust','imsize','wprojplanes','n
 IMAGING_CONFIG_KEYS = ['cell', 'robust', 'imsize', 'wprojplanes', 'niter', 'threshold', 'multiscale', 'nterms', 'gridder', 'deconvolver', 'specmode', 'uvtaper', 'restfreq', 'fitspw', 'fitorder', 'restoringbeam', 'stokes', 'mask', 'rmsmap','outlierfile', 'pbthreshold', 'pbband','imspw']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
-CONTAINER = '/software/projects/pawsey1164/ssankar/containers/casa-stable-v6.6.5-31-py3.10-2025-02-20.sif'
+CONTAINER = '/software/projects/pawsey1164/ssankar/containers/idianext.sif'
+
+#Container-specific Python interpreter overrides: some containers (e.g. idianext.sif) install
+#casatasks/casatools into a venv that isn't on PATH by default via `singularity exec`.
+CONTAINER_PYTHON = {
+    CONTAINER: '/opt/venv/bin/python3',
+}
+
+#Container-specific extra environment variables, passed to `singularity exec --env`.
+#idianext.sif's venv Python is linked against a spack-built OpenSSL newer than the
+#container's base-OS OpenSSL; without LD_PRELOAD forcing the venv's OpenSSL to load
+#first, `import ssl` (needed transitively by casatasks) fails with a symbol-version
+#mismatch (glibc resolves libcrypto's SONAME once, from whatever loads it first).
+#NOTE: the spack path below is specific to this build of idianext.sif and will need
+#updating if the container is rebuilt (spack installs are hash-suffixed).
+_IDIANEXT_OPENSSL_LIB = '/opt/spack/opt/spack/linux-zen2/openssl-3.4.1-kd6nwzlpilohkirzkrhioadlkvonnjkz/lib64'
+CONTAINER_ENV = {
+    CONTAINER: {
+        'LD_PRELOAD': '{0}/libcrypto.so.3:{0}/libssl.so.3'.format(_IDIANEXT_OPENSSL_LIB),
+    },
+}
+
 MPI_WRAPPER = 'srun'
 PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts run before calibration at top level directory when nspw > 1
 POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''), \
@@ -390,7 +411,9 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
     if casa_script:
         params['casa_call'] = "casa --nologger --nogui {casa_log} -c".format(**params)
     else:
-        params['casa_call'] = 'python3'
+        params['casa_call'] = CONTAINER_PYTHON.get(container, 'python3')
+
+    params['env_flags'] = ''.join(' --env {0}={1}'.format(k, v) for k, v in CONTAINER_ENV.get(container, {}).items())
 
     if arrayJob:
         command += """#Iterate over SPWs in job array, launching one after the other
@@ -400,7 +423,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
 
         """ % SPWs.replace(',',' ').replace(SPW_PREFIX,'')
 
-    command += "{mpi_wrapper} -c {cpus} singularity exec {container} {plot_call} {casa_call} {script} {args}".format(**params)
+    command += "{mpi_wrapper} -c {cpus} singularity exec{env_flags} {container} {plot_call} {casa_call} {script} {args}".format(**params)
 
     if arrayJob:
         command += '\ncd ..\n'
