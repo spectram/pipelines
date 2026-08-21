@@ -25,6 +25,7 @@ import argparse
 import os
 import sys
 import re
+import math
 import config_parser
 import bookkeeping
 from shutil import copyfile
@@ -42,6 +43,18 @@ CPUS_PER_NODE_LIMIT = 64
 NTASKS_PER_NODE_LIMIT = CPUS_PER_NODE_LIMIT
 MEM_PER_NODE_GB_LIMIT = 230 #257568 MB
 MEM_PER_NODE_GB_LIMIT_HIGHMEM = 1508 #1544192 MB
+
+#Setonix's 'work'/'long' partitions share nodes between jobs: --mem is capped proportional to
+#requested cores (~1840 MB/core) unless the whole node is reserved with --exclusive. Requesting
+#more memory than this ratio allows (e.g. the full-node MEM_PER_NODE_GB_LIMIT above, with only a
+#handful of cores) makes sbatch fail with "Requested node configuration is not available".
+MEM_PER_CPU_MB_SHARED = 1840
+
+#Sensible starting memory request for jobs sharing a node (most of the pipeline) rather than the
+#full-node MEM_PER_NODE_GB_LIMIT (only selfcal_part1 needs the whole node -- see write_sbatch()).
+#Users can raise [-m --mem]/[mem] in the config for scripts that need more; jobs whose own
+#parallelism already earns more than this (e.g. imaging/flagging) aren't capped by it.
+DEFAULT_MEM_GB = 32
 
 #Set global values for paths and file names
 THIS_PROG = __file__
@@ -203,8 +216,8 @@ def parse_args():
                         help="Use this number of tasks (per node) [default: 16; max: {0}].".format(NTASKS_PER_NODE_LIMIT))
     parser.add_argument("-D","--plane", metavar="num", required=False, type=int, default=1,
                             help="Distribute tasks of this block size before moving onto next node [default: 1; max: ntasks-per-node].")
-    parser.add_argument("-m","--mem", metavar="num", required=False, type=int, default=MEM_PER_NODE_GB_LIMIT,
-                        help="Use this many GB of memory (per node) for threadsafe scripts [default: {0}; max: {0}].".format(MEM_PER_NODE_GB_LIMIT))
+    parser.add_argument("-m","--mem", metavar="num", required=False, type=int, default=DEFAULT_MEM_GB,
+                        help="Use this many GB of memory (per node) for threadsafe scripts [default: {0}; max: {1}].".format(DEFAULT_MEM_GB,MEM_PER_NODE_GB_LIMIT))
     parser.add_argument("-p","--partition", metavar="name", required=False, type=str, default="work", help="SLURM partition to use [default: 'Main'].")
     parser.add_argument("-T","--time", metavar="time", required=False, type=str, default="12:00:00", help="Time limit to use for all jobs, in the form d-hh:mm:ss [default: '12:00:00'].")
     parser.add_argument("-S","--scripts", action='append', nargs=3, metavar=('script','threadsafe','container'), required=False, type=parse_scripts, default=SCRIPTS,
@@ -431,7 +444,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
     return command
 
 
-def write_sbatch(script,args,nodes=1,tasks=16,mem=MEM_PER_NODE_GB_LIMIT,name="job",runname='',plane=1,exclude='',mpi_wrapper=MPI_WRAPPER,container=CONTAINER,
+def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runname='',plane=1,exclude='',mpi_wrapper=MPI_WRAPPER,container=CONTAINER,
                 partition="work",time="12:00:00",casa_script=False,SPWs='',nspw=1,account='',reservation='',modules=[],justrun=False):
 
     """Write a SLURM sbatch file calling a certain script (and args) with a particular configuration.
@@ -502,12 +515,38 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=MEM_PER_NODE_GB_LIMIT,name="jo
         elif not dopol and params['cpus'] > 2:
             params['cpus'] = 2
 
-    #If requesting all CPUs, user may as well use all memory
-    if params['cpus'] * tasks == CPUS_PER_NODE_LIMIT:
+    #selfcal_part1 does wide-field imaging with large cubes and high wprojplanes, and needs the
+    #whole node's memory regardless of core count -- reserve the node outright with --exclusive.
+    #Every other job runs on Setonix's shared partitions, where SLURM ties --mem to allocated
+    #cores (~MEM_PER_CPU_MB_SHARED per core): requesting more memory than that ratio allows
+    #(without --exclusive) makes sbatch reject the job outright with "Requested node
+    #configuration is not available". Some scripts are hard-coded to a single task/cpu for
+    #correctness (not thread-safe), but may still need substantial memory for CASA operations on
+    #the whole MS -- so let the configured mem request pull cpus-per-task up (reserving otherwise-
+    #idle cores purely to unlock proportional memory) rather than silently shrinking mem to fit
+    #whatever cpu count a script's parallelism heuristic happened to pick.
+    if 'selfcal_part1' in script:
+        params['exclusive'] = '\n#SBATCH --exclusive'
         if params['partition'] == 'HighMem':
             params['mem'] = MEM_PER_NODE_GB_LIMIT_HIGHMEM
         else:
             params['mem'] = MEM_PER_NODE_GB_LIMIT
+    else:
+        params['exclusive'] = ''
+        max_cpus_per_task = max(1, int(CPUS_PER_NODE_LIMIT / tasks))
+        node_mem_cap_gb = MEM_PER_NODE_GB_LIMIT_HIGHMEM if params['partition'] == 'HighMem' else MEM_PER_NODE_GB_LIMIT
+        if params['cpus'] == 1:
+            #This script wasn't given extra cpus by the parallelism heuristic above (usually
+            #because it's a single-task, non-thread-safe script) -- use the configured mem
+            #request to decide how many otherwise-idle cores to reserve for it instead.
+            mem_derived_cpus = math.ceil(min(params['mem'], node_mem_cap_gb) * 1024 / MEM_PER_CPU_MB_SHARED / tasks)
+            params['cpus'] = min(max(params['cpus'], mem_derived_cpus), max_cpus_per_task)
+        else:
+            #Parallelism heuristic already picked cpus-per-task for this script; only clamp to
+            #the node's core budget, and let mem below be derived from that (uncapped by the
+            #configured mem ceiling, which is meant for the single-task case above).
+            params['cpus'] = min(params['cpus'], max_cpus_per_task)
+        params['mem'] = min(node_mem_cap_gb, int(params['cpus'] * tasks * MEM_PER_CPU_MB_SHARED / 1024))
 
     #Use xvfb for plotting scripts
     plot = ('plot' in script)
@@ -544,7 +583,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=MEM_PER_NODE_GB_LIMIT,name="jo
             if len(module) > 0:
                 params['modules'] += "module load {0}\n".format(module)
 
-    contents = """#!/bin/bash{array}{exclude}{reservation}
+    contents = """#!/bin/bash{array}{exclude}{reservation}{exclusive}
     #SBATCH --account={account}
     #SBATCH --nodes={nodes}
     #SBATCH --ntasks-per-node={tasks}
@@ -957,7 +996,7 @@ def srun(arg_dict,qos=False,time=10,mem=4):
 
     return call
 
-def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scripts=0, mpi_wrapper=MPI_WRAPPER, nodes=8, ntasks_per_node=4, mem=MEM_PER_NODE_GB_LIMIT,plane=1, partition='work',
+def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scripts=0, mpi_wrapper=MPI_WRAPPER, nodes=8, ntasks_per_node=4, mem=DEFAULT_MEM_GB,plane=1, partition='work',
                time='12:00:00', submit=False, name='', verbose=False, quiet=False, dependencies='', exclude='', account='b03-idia-ag', reservation='', modules=[], timestamp='', justrun=False):
 
     """Write a series of sbatch job files to calibrate a CASA MeasurementSet.
