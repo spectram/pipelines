@@ -28,6 +28,7 @@ import re
 import math
 import config_parser
 import bookkeeping
+import script_registry
 from shutil import copyfile
 from copy import deepcopy
 import logging
@@ -464,7 +465,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
     command : str
         Bash command to call with srun or within sbatch file."""
 
-    arrayJob = ',' in SPWs and 'partition' in script and nspw > 1
+    arrayJob = ',' in SPWs and script_registry.get_properties(script).is_spw_fanout and nspw > 1
 
     #Store parameters passed into this function as dictionary, and add to it
     params = locals()
