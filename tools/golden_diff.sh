@@ -39,8 +39,28 @@ mkdir -p "$RUN_DIR/fixture.ms"
 rm -f "$RUN_DIR/fixture_config.txt"
 rm -rf "$RUN_DIR/fixture.ms"
 rm -f "$RUN_DIR"/jobScripts/*.txt 2>/dev/null || true
+# write_sbatch() unconditionally mkdirs LOG_DIR ('logs') in the CWD it's run from, but
+# -R never actually writes into it (that only happens when a job runs). It stays empty,
+# so git never tracked it in baseline/ (git can't store empty directories) -- drop it
+# here too so an empty 'logs' dir doesn't show up as a spurious one-sided diff.
+rmdir "$RUN_DIR/logs" 2>/dev/null || true
+
+# Normalize the repo's own absolute path before comparing/saving. Generated scripts
+# embed REPO_ROOT (via PYTHONPATH and the script's own path) verbatim, so a baseline
+# captured from one checkout location (e.g. the canonical clone) spuriously "differs"
+# from a run done from another (e.g. a worktree-isolated agent session nested under
+# .claude/worktrees/<id>/) even with zero code changes. Collapse any absolute path
+# immediately preceding '/processMeerKAT' down to a fixed placeholder -- that's exactly
+# and only the REPO_ROOT-derived prefix -- so the harness is comparing generated
+# *content*, not the accident of where this checkout happens to sit on disk. Other
+# absolute paths (e.g. the container path) are untouched since they don't end in
+# '/processMeerKAT'.
+normalize_repo_root() {
+    grep -rlZ . "$1" 2>/dev/null | xargs -0 -r sed -i -E 's#[^[:space:]]*/processMeerKAT#__REPO_ROOT__/processMeerKAT#g'
+}
 
 if [[ "${1:-}" == "--update-baseline" ]]; then
+    normalize_repo_root "$RUN_DIR"
     rm -rf "$BASELINE_DIR"
     mkdir -p "$BASELINE_DIR"
     cp -r "$RUN_DIR"/. "$BASELINE_DIR"/
@@ -53,7 +73,13 @@ if [[ ! -d "$BASELINE_DIR" ]]; then
     exit 1
 fi
 
-if diff -ru "$BASELINE_DIR" "$RUN_DIR"; then
+NORM_BASELINE_DIR=$(mktemp -d)
+trap 'rm -rf "$RUN_DIR" "$NORM_BASELINE_DIR"' EXIT
+cp -r "$BASELINE_DIR"/. "$NORM_BASELINE_DIR"/
+normalize_repo_root "$NORM_BASELINE_DIR"
+normalize_repo_root "$RUN_DIR"
+
+if diff -ru "$NORM_BASELINE_DIR" "$RUN_DIR"; then
     echo "OK: generated job scripts match the baseline."
 else
     echo "REGRESSION: generated job scripts differ from the baseline (see diff above)." >&2
