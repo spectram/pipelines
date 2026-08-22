@@ -3,6 +3,8 @@
 
 import sys
 import os
+import glob
+import shutil
 
 import config_parser
 from config_parser import validate_args as va
@@ -56,6 +58,23 @@ def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
         # requested for a data that was not selected" partway through the major cycle. The PSF
         # recompute this forces costs ~30s (see tclean's setup/weight-density steps), negligible
         # next to the major cycle itself.
+        #
+        # Since calcpsf is always True now, there's no scenario where reusing a *previous attempt's*
+        # leftover products for this same loop is intentional -- so remove them before running.
+        # Confirmed by a real crash+retry: a stale imagename.psf/.sumwt symlink left over from a
+        # crashed run of the old (now-removed) PSF-reuse code was still present -- unrelated to and
+        # untouched by calcpsf -- on the next attempt. tclean's restart=True path found that
+        # pre-existing .psf/.sumwt (pointing at a *different* image's finalized weights) and, despite
+        # calcpsf=True, ended up with inconsistent per-engine PSF/weight registration, reproducing
+        # the identical "Imaging weight calculation is requested for a data that was not selected"
+        # error -- this time raised from makepsf() itself. Any partial products from an earlier
+        # crashed attempt at this exact loop (psf/sumwt/gridwt_temp/workdirectory/etc, all sharing
+        # the imagename prefix) are removed so every attempt starts genuinely clean.
+        for product in glob.glob(imagename + '.*'):
+            if os.path.islink(product) or os.path.isfile(product):
+                os.remove(product)
+            else:
+                shutil.rmtree(product)
         tclean(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
             imsize=imsize[loop], cell=cell[loop], stokes='I', gridder=gridder[loop],
             wprojplanes = wprojplanes[loop], deconvolver = deconvolver[loop], restoration=True,
