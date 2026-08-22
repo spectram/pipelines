@@ -98,7 +98,20 @@ _IDIANEXT_OPENSSL_LIB = '/opt/spack/opt/spack/linux-zen2/openssl-3.4.1-kd6nwzlpi
 #rebuilding the container: a source build of mpi4py (NOT the bundled manylinux wheel, which
 #statically links its own MPI and never talks to Slurm's PMI/PALS) against idianext.sif's own
 #dynamic MPICH, which resolves libmpi.so.12 through Cray's ABI-compatibility shim
-#(lib-abi-mpich) at runtime -- see /software/projects/pawsey1164/ssankar/containers/idianext_mpi4py.
+#(lib-abi-mpich) at runtime.
+#
+#This same directory also holds casampi==0.6.0 (pip install --no-deps --target), overriding
+#the container's pinned casampi==0.5.9: 0.5.9's MPICommandServer runs dispatched 'exec' commands
+#via bare exec(code) with no explicit globals dict, so variables assigned by one dispatched
+#command (e.g. continuum/mfs tclean's `toolsi = synthesisimager()`) only live in that single
+#call's transient locals and vanish before the next dispatched command (`toolsi.selectdata(...)`)
+#can see them -- NameError: name 'toolsi' is not defined, reproducible on every rank. This is a
+#known CASA bug (CAS-14733, Python 3.13-specific) fixed upstream in casampi 0.6.0's
+#`exec(code, globals())`. Only affects continuum/mfs parallel tclean (quick_tclean.py,
+#selfcal_part1.py); createmms=True (partition.py) and cube-mode tclean use a different code path
+#and were unaffected even under 0.5.9.
+#
+#See /software/projects/pawsey1164/ssankar/containers/idianext_mpi4py.
 _IDIANEXT_MPI4PY_DIR = '/software/projects/pawsey1164/ssankar/containers/idianext_mpi4py'
 
 #Container-specific extra environment variables, passed to `singularity exec --env`.
