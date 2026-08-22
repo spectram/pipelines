@@ -593,7 +593,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     #the whole MS -- so let the configured mem request pull cpus-per-task up (reserving otherwise-
     #idle cores purely to unlock proportional memory) rather than silently shrinking mem to fit
     #whatever cpu count a script's parallelism heuristic happened to pick.
-    if 'selfcal_part1' in script:
+    if script_registry.get_properties(script).exclusive_node:
         params['exclusive'] = '\n#SBATCH --exclusive'
         #Setonix's --exclusive admission control additionally requires ntasks-per-node to evenly
         #partition the node's physical cores (128, i.e. CPUS_PER_NODE_LIMIT*2 SMT threads) --
