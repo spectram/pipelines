@@ -1,0 +1,102 @@
+[data]
+vis = 'fixture.ms'
+
+[fields]
+bpassfield = 'J0000-0000'
+fluxfield = 'J0000-0000'
+phasecalfield = 'J1111-1111'
+targetfields = 'FIXTURETARGET'
+extrafields = ''
+
+[slurm]
+nodes = 1
+ntasks_per_node = 9
+plane = 1
+mem = 32
+partition = 'work'
+exclude = ''
+time = '12:00:00'
+submit = False
+container = '/software/projects/pawsey1164/ssankar/containers/idianext.sif'
+mpi_wrapper = 'srun'
+name = ''
+dependencies = ''
+account = 'pawsey1164'
+reservation = ''
+modules = ['singularity/4.1.0-mpi']
+verbose = False
+precal_scripts = []
+postcal_scripts = []
+scripts = [('partition.py', True, ''), ('validate_input.py', False, ''), ('flag_round_1.py', True, ''), ('calc_refant.py', False, ''), ('setjy.py', True, ''), ('xx_yy_solve.py', False, ''), ('xx_yy_apply.py', True, ''), ('flag_round_2.py', True, ''), ('xx_yy_solve.py', False, ''), ('xx_yy_apply.py', True, ''), ('split.py', True, ''), ('quick_tclean.py', True, ''), ('concat.py', False, ''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py', True, ''), ('selfcal_part2.py', False, ''), ('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', True, '')]
+
+[crosscal]
+minbaselines = 4
+chanbin = 1
+width = 1
+timeavg = '8s'
+createmms = True
+keepmms = True
+spw = '*:1410~1420.0MHz'
+nspw = 1
+calcrefant = False
+refant = 'm059'
+standard = 'Stevens-Reynolds 2016'
+badants = []
+badfreqranges = [ '933~960MHz',
+	'1163~1299MHz',
+	'1524~1630MHz']
+
+[selfcal]
+nloops = 3
+loop = 0
+cell = '1.5arcsec'
+robust = -0.5
+imsize = [6144, 6144]
+wprojplanes = 512
+niter = [10000, 50000, 80000, 1000000]
+threshold = ['0.5mJy', 10, 5, 3]
+nterms = 1
+gridder = 'wproject'
+deconvolver = 'multiscale'
+calmode = ['','p','ap','']
+solint = ['','1min','10min','']
+scales = [0,5,10,15]
+usermask = ''
+uvrange = ''
+flag = True
+gaintype = 'G'
+discard_nloops = 0
+outlier_threshold = 0.0
+outlier_radius = 0.0
+atrous_do = True
+flag_maxsize_bm = 30.0
+
+[image]
+cell = '2arcsec'
+robust = 0.0
+imsize = [2048, 2048]
+wprojplanes = 128
+niter = 50000
+threshold = '0.2mJy'
+multiscale = [0, 5, 10, 15]
+nterms = 2
+gridder = 'wproject'
+deconvolver = 'multiscale'
+specmode = 'cube'
+uvtaper = ''
+restfreq = '1420.406MHz'
+fitspw = ''
+imspw = ''
+fitorder = 1
+restoringbeam = ''
+stokes = 'I'
+pbthreshold = 0.1
+pbband = 'LBand'
+mask = ''
+rmsmap = ''
+outlierfile = ''
+
+[run]
+continue = True
+dopol = False
+timestamp = 'FIXTURE'

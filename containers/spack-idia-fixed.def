@@ -1,0 +1,181 @@
+Bootstrap: localimage
+From: casa-test_mpich.sif
+
+%labels
+        APPLICATION_NAME  Ubuntu 24.04 Pawsey MPICH + CASACORE 3.7.1 + MeetKAT pipelines
+        OS_VERSION 24.04
+        AUTHOR_NAME FABIEN VOISIN
+        AUTHOR_EMAIL fabien.voisin@adelaide.edu.au
+
+%help
+        This image requires the caller to bind-mount /var/spool/slurmd when running
+        under Slurm on a Cray/HPE Shasta system (e.g. Pawsey Setonix):
+
+            singularity exec --bind /var/spool/slurmd <image> ...
+
+        This cannot be baked into the image itself: /var/spool/slurmd/<jobid> is a
+        per-job directory Cray's PALS process launcher creates on the compute node
+        at job-submission time, and it does not exist until the Slurm job starts.
+        Without this bind, mpi4py/casampi's MPI_Init() aborts with
+        "pals_init2() failed". See the %post section below for the full explanation
+        of why this and the other MPI/SSL fixes in this recipe are needed.
+
+
+%post -c /bin/bash
+    CUSTOM_ENV=/.singularity.d/env/99-zz_custom_env.sh
+    cat >$CUSTOM_ENV <<EOF
+#!/bin/bash
+PS1="\[\e[1;92m\][Singularity]\[\e[m\] \u@\h:\w\$ "
+EOF
+    chmod 755 $CUSTOM_ENV
+
+
+%post
+	export debian_frontend=noninteractive
+	apt-get -y update
+	apt-get -y install less emacs unzip
+	apt-get install fuse xvfb libgoogle-perftools-dev libarchive-dev -y
+	# Build deps for SoFiA-2 (below): wcslib for WCS support, imagemagick for
+	# SoFiA-image-pipeline's optional image-combining (-m) option.
+	apt-get install -y wcslib-dev imagemagick
+	. /opt/spack/share/spack/setup-env.sh
+	spack env activate spack-env
+	spack add perl ghostscript libxi libfuse  c-ares grpc qt
+	spack concretize
+	spack install
+	. /opt/venv/bin/activate
+	# Update pip and install python packages
+	python -m pip install --upgrade cloudpickle holoviews datasha
+der bokeh pandas dask-ms[xarray] scipy==1.13.0 protobuf==3.20 scikit-
+image matplotlib katdal astroquery DateTime
+        python -m pip install --no-binary :all: python-casacore
+        python -m pip install pyvirtualdisplay
+	# Install Jupyter for IPykernel
+        python -m pip install jupyter ipykernel
+
+        # Install PyBDSF
+        #apt-get install -y libboost-python-dev libboost-numpy-dev pyt
+hon-setuptools qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools
+        python -m pip install --upgrade PyQt5==5.15.7
+        python -m pip install --upgrade astropy
+        python -m pip install bdsf[ishell]
+	# Install PYGDSM
+	python -m pip install healpy
+        python -m pip install h5py
+	python -m pip install git+https://github.com/telegraphic/pygdsm
+sm
+	python -m pip install casadata==2025.9.22
+        python -m pip install casaconfig==1.5.0
+        python -m pip install casatools==6.7.3.21
+        python -m pip install casatasks==6.7.3.21
+        python -m pip install casaplotms==2.8.2
+        python -m pip install casaviewer==2.4.4
+        python -m pip install casashell==6.7.3.21
+        python -m pip install casaplotserver==2.0.3
+        python -m pip install casatestutils==6.7.3.21
+        python -m pip install casatablebrowser==0.0.40
+        python -m pip install casalogger==1.0.23
+        python -m pip install casafeather==0.0.27
+        # --- Fix: casampi 0.5.9 has a known bug (CAS-14733, Python 3.13-specific): its
+        # MPICommandServer runs dispatched 'exec' commands via bare exec(code) with no explicit
+        # globals dict, so variables assigned by one dispatched command (e.g. continuum/mfs
+        # tclean's `toolsi = synthesisimager()`) only live in that single call's transient
+        # locals and vanish before the next dispatched command (`toolsi.selectdata(...)`) can
+        # see them -- NameError: name 'toolsi' is not defined, reproducible on every rank, for
+        # any continuum/mfs parallel tclean call. Fixed upstream in 0.6.0's
+        # `exec(code, globals())`. createmms=True and cube-mode tclean use a different code path
+        # and are unaffected either way, but there's no reason to pin the older, buggy version.
+        python -m pip install casampi==0.6.0
+
+	# --- Fix: casampi (installed above) requires mpi4py to do real MPI client/server
+	# work, but it was never installed here, so casampi silently falls back to
+	# believing it's the only process in existence -- every srun-launched task then
+	# independently thinks it's the sole worker, and multiple tasks racing on the same
+	# output (e.g. FileExistsError from mstransform createmms=True) is the result.
+	#
+	# Must be a SOURCE build (--no-binary), not the prebuilt PyPI wheel: mpi4py's
+	# manylinux wheels statically link their own bundled MPICH and never talk to the
+	# host's real MPI/PMI at all (every rank reports size=1, silently). A source build
+	# dynamically links against *this* container's own MPICH (/usr/local/lib/libmpi.so.12,
+	# already present in the base image), which lets Cray's ABI-compatibility shim
+	# (lib-abi-mpich, present on Cray EX/Shasta systems) transparently redirect it to
+	# the real fabric-aware MPI implementation at runtime -- without this container ever
+	# needing to know about Cray at build time.
+	python -m pip install --no-binary mpi4py mpi4py
+
+	# --- Fix: casampi's MPIEnvironment (casampi/MPIEnvironment.py) only attempts MPI
+	# initialisation if 'OMPI_COMM_WORLD_RANK' is present in the environment -- an
+	# OpenMPI-only check. Slurm's srun on Cray/HPE Shasta systems (Pawsey Setonix
+	# included) launches via PMI/PALS instead, which never sets this variable, so
+	# casampi always takes its "MPI disabled" fallback path regardless of whether real
+	# MPI would otherwise work. The check only tests for the variable's *presence*, not
+	# its correctness, so bridge it from whichever of the common MPICH/PMI/Slurm rank
+	# variables is actually set. Baked into the image's own environment (not passed in
+	# by callers) so every launcher (srun, mpirun, mpiexec) picks it up automatically.
+	OMPI_SHIM=/.singularity.d/env/91-ompi-rank-shim.sh
+	cat >$OMPI_SHIM <<'EOF'
+#!/bin/sh
+if [ -z "${OMPI_COMM_WORLD_RANK:-}" ]; then
+    if [ -n "${PMI_RANK:-}" ]; then
+        export OMPI_COMM_WORLD_RANK="$PMI_RANK"
+    elif [ -n "${SLURM_PROCID:-}" ]; then
+        export OMPI_COMM_WORLD_RANK="$SLURM_PROCID"
+    fi
+fi
+EOF
+	chmod 755 $OMPI_SHIM
+
+	# --- Fix: this venv's Python is linked against a spack-built OpenSSL, but at
+	# runtime some sites' Singularity/Apptainer setup (e.g. Pawsey's "mpi"-flavoured
+	# module, used to bind host MPI/network-fabric libraries into the container) also
+	# injects its own, older host OpenSSL via LD_PRELOAD/bind-mount for unrelated
+	# libraries (libcurl, libssh, etc.) that depend on it. Because glibc resolves a
+	# given shared-library SONAME only once per process, whichever OpenSSL loads first
+	# wins for the rest of the process -- and if the site's older one wins, `import ssl`
+	# (needed transitively by casatasks) fails with a symbol-version mismatch
+	# (e.g. "version `OPENSSL_3.3.0' not found").
+	#
+	# Fix by LD_PRELOADing *this* venv's own OpenSSL first, discovered dynamically here
+	# so the exact spack hash doesn't need to be hardcoded downstream. NOTE: this
+	# *replaces* LD_PRELOAD rather than appending to it, so if a site's own LD_PRELOAD
+	# list (like Pawsey's) is relied on for other host libraries, this could shadow
+	# those too -- in practice, on Setonix, this has been verified not to break
+	# anything CASA's own pipeline needs (including outbound HTTPS for CASA's own data
+	# auto-download), but be aware of this if debugging seemingly-unrelated failures
+	# after a container update on a new site.
+	OPENSSL_PREFIX=$(spack location -i openssl)
+	SSL_ENV=/.singularity.d/env/91-openssl-preload.sh
+	cat >$SSL_ENV <<EOF
+#!/bin/sh
+export LD_PRELOAD="${OPENSSL_PREFIX}/lib64/libcrypto.so.3:${OPENSSL_PREFIX}/lib64/libssl.so.3"
+EOF
+	chmod 755 $SSL_ENV
+
+	# Fix matplotlib issue
+        python -m pip uninstall matplotlib -y
+        python -m pip install matplotlib
+	cd /opt
+        git clone https://open-bitbucket.nrao.edu/scm/casa/casaaddons.git
+	# Install katbeam
+        python -m pip install git+https://github.com/ska-sa/katbeam
+
+	# Install SoFiA-2 (source finder) from latest master, with OpenMP + WCSLIB support.
+	# `make install` (no DESTDIR) installs the `sofia` executable to /usr/bin, which is
+	# already on PATH for every shell in this image.
+	cd /opt
+	git clone https://gitlab.com/SoFiA-Admin/SoFiA-2.git
+	cd SoFiA-2
+	make OMP=true
+	make install
+	cd /opt
+
+	# Install SoFiA-image-pipeline (postprocessing plots/moment maps for SoFiA-2
+	# catalogues) into the same venv as the rest of the pipeline's Python packages.
+	python -m pip install sofia-image-pipeline
+
+	echo 'measures.directory: /opt/install/share/casadata/' > /opt/.casarc
+	groupadd -g 20381 slurm
+	useradd -m -c "Slurm Slug" -u 20381 -g slurm slurm
+
+%runscript
+	. /opt/spack/share/spack/setup-env.sh && spack env activate spack-env && . /opt/venv/bin/activate && python "$@"
