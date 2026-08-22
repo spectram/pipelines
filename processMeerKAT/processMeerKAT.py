@@ -635,7 +635,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
 
     params['command'] = write_command(script,args,name=name,mpi_wrapper=mpi_wrapper,container=container,\
                                       casa_script=casa_script,plot=plot,SPWs=SPWs,nspw=nspw, cpus=params['cpus'])
-    if 'partition' in script and ',' in SPWs and nspw > 1:
+    if properties.is_spw_fanout and ',' in SPWs and nspw > 1:
         params['ID'] = '%A_%a'
         params['array'] = '\n#SBATCH --array=0-{0}%{1}'.format(nspw-1,nconcurrent)
     else:
