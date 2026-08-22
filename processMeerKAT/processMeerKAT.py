@@ -1201,21 +1201,19 @@ def default_config(arg_dict):
     config_parser.overwrite_config(filename, conf_dict={'dopol' : arg_dict['dopol']}, conf_sec='run', sec_comment='# Internal variables for pipeline execution')
 
     if not arg_dict['do2GC'] or not arg_dict['science_image']:
-        remove_scripts = []
+        #Roles to drop from postcal_scripts, keyed by declared pipeline_role rather than
+        #literal filename -- same pattern as write_master()/write_spw_master()'s has_role()
+        #(ed18bb7) and format_args()'s selfcal-present check (0e3c9ef).
+        remove_roles = set()
         if not arg_dict['do2GC']:
             config_parser.remove_section(filename, 'selfcal')
-            remove_scripts = ['selfcal_part1.py', 'selfcal_part2.py']
+            remove_roles |= {'selfcal_part1', 'selfcal_part2'}
         if not arg_dict['science_image']:
             config_parser.remove_section(filename, 'image')
-            remove_scripts += ['science_image.py']
+            remove_roles.add('science_image')
 
-        scripts = arg_dict['postcal_scripts']
-        i = 0
-        while i < len(scripts):
-            if scripts[i][0] in remove_scripts:
-                scripts.pop(i)
-                i -= 1
-            i += 1
+        scripts = [s for s in arg_dict['postcal_scripts']
+                   if script_registry.get_properties(s[0]).pipeline_role not in remove_roles]
 
         config_parser.overwrite_config(filename, conf_dict={'postcal_scripts' : scripts}, conf_sec='slurm')
 
