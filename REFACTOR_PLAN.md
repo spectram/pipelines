@@ -15,6 +15,8 @@ ae770e4 Phase 0: branch setup for the Pawsey architecture refactor
 a5b3d28 Phase 1 (2b-array): migrate write_sbatch()'s --array directive to script_registry
 ea230a6 Phase 1 (2e/5): migrate write_sbatch()'s long-partition override to script_registry
 ed18bb7 Phase 1 (3/5): migrate write_master()/write_spw_master() to script_registry
+fd1db51 Move the refactor plan into the repo for cross-session handoff
+a062602 Fix selfcal_part1 crash: clean up stale per-loop products before retrying (cherry-picked from HI-pawsey 543363b)
 ```
 
 **Done**: Phase 0 (container recipe + `tools/golden_diff.sh` harness) and Phase 1 items 1–3 of 5
@@ -30,17 +32,21 @@ path, `dopol=True`) — see individual commit messages for exactly what was chec
 `script_registry`, then item 5 — `default_config()`'s `remove_scripts` hack. After that, Phase 2 (the
 self-calibration stage-list restructuring) is next in sequence.
 
-**Important open correction**: Phase 2's write-up below was originally motivated by a bug "fixed" on
-`HI-pawsey` (commit `0013ebe`, forcing `calcpsf=True` in `selfcal_part1.py`). That fix does **not** actually
-resolve the crash — see the "Correction (2026-08-22...)" callout inside Phase 2 below for what's actually
-known. `HI-pawsey`'s `selfcal_part1` loop-1 crash (`RuntimeError: Imaging weight calculation is requested
-for a data that was not selected`, in parallel `tclean`) remains **unresolved**, is being investigated by
-the user directly (not delegated), and is tracked as a separate, non-blocking track from this plan. Don't
-assume it's fixed when reading Phase 2/7b below.
+**`HI-pawsey`'s `selfcal_part1` crash is now actually resolved** (as of `HI-pawsey` commit `543363b`,
+cherry-picked here as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)"
+callout describing an intermediate state where the first fix attempt (`0013ebe`, forcing `calcpsf=True`)
+turned out *not* to fix the crash — that callout is now superseded by the real root cause and fix described
+right after it (leftover stale `imagename.psf`/`.sumwt` files from a previous crashed attempt confusing
+`tclean`'s `restart=True` path regardless of `calcpsf`; fixed by deleting `imagename.*` before every
+`tclean` call in `selfcal_part1.py`). The full 4-stage HI loop (`selfcal_part1`/`selfcal_part2` for loop 1)
+has been run successfully end-to-end on `HI-pawsey` with this fix in place. Phase 2's stage-list
+restructuring is unaffected either way (it was always a readability win independent of the bug); Phase 7b's
+checkpoint-chaining design should still apply the same "always clean up, never assume leftover state is
+safe to reuse" lesson when it's implemented, even though the specific bug that taught it is now fixed.
 
-`HI-pawsey` itself has 2 commits not yet pushed to `origin/HI-pawsey` as of this writing (`2077eae` adding
-`CLAUDE.md`, `0013ebe` the not-actually-a-fix above) — check `git log origin/HI-pawsey..HI-pawsey` before
-assuming what's upstream.
+`HI-pawsey` has been pushed to `origin/HI-pawsey` through `543363b` (includes `2077eae` CLAUDE.md, `0013ebe`
+the calcpsf change, and `543363b` the actual fix) — check `git log origin/HI-pawsey..HI-pawsey` if picking
+this up later, in case more has landed since.
 
 ---
 
@@ -147,19 +153,26 @@ runtime from `nloops+1`-long parallel config arrays (`calmode`, `solint`, `niter
 lines 131–176). Nothing states in one place that "loop 1 exists to produce a phase-only calibration
 solution" — that fact only exists as `calmode[1] == 'p'`.
 
-**Correction (2026-08-22, after re-running on `HI-pawsey`)**: the `calcpsf=True` fix above does **not**
-actually resolve the crash. Re-running loop 1 with the fix applied hit the identical
+**Correction (2026-08-22, after re-running on `HI-pawsey`)**: the `calcpsf=True` fix above by itself does
+**not** resolve the crash. Re-running loop 1 with just that fix applied hit the identical
 `RuntimeError: Imaging weight calculation is requested for a data that was not selected`, on the same
-MPI server rank (1), but now raised from `makepsf()` itself rather than `executemajorcycle()` — i.e. the
-error survives even when the PSF is genuinely being recomputed, which rules out PSF-reuse/`calcpsf` as the
-root cause. The `calcpsf=True` change is still worth keeping (it removes a real footgun and the crash
-symptom moved, which is informative), but it is not a fix. New leading suspect, based on the one thing that
-actually differs between loop 0's tclean call (no mask, succeeds) and loop 1's (`usemask='user'`,
-`mask=<loop 0's pixmask>`, fails) with everything else about the data/partitioning held identical: the
-interaction between a real `usemask='user'` clean mask and `parallel=True`'s per-engine weight-density setup.
-Not yet root-caused. This doesn't block Phase 2's stage-list restructuring (it's a readability win
-independent of the bug), but Phase 7b's checkpoint-chaining design (below) should not assume the `calcpsf`
-story is settled.
+MPI server rank (1), but now raised from `makepsf()` itself rather than `executemajorcycle()`. Investigated
+the mask directly at this point (opened `im_0.islmask`/`im_0.pixmask` with `casatools.image`, compared
+coordinate systems and pixel content against `im_0.image` and the `im_1` definition from the tclean log) —
+the mask is correctly formed and not the cause; the `usemask='user'` interaction was a reasonable suspect
+but turned out to be a red herring. **Actual root cause, found and fixed (`HI-pawsey` commit `543363b`,
+here as `a062602`)**: a stale `imagename.psf`/`.sumwt` symlink pair, left over on disk from the *earlier*
+crashed run of the old `calcpsf=False` PSF-reuse code, was never cleaned up before the next attempt.
+`tclean`'s `restart=True` path found that pre-existing `.psf`/`.sumwt` (pointing at a *different* image's
+already-finalized weights) and, despite `calcpsf=True` being passed, ended up with inconsistent per-engine
+PSF/weight registration — reproducing the identical error regardless of the `calcpsf` value. Fix: delete
+any `imagename.*` leftovers before every `tclean` call in `selfcal_part1.py`, since `calcpsf` is always
+`True` now and there's never a legitimate reason to reuse a previous attempt's partial products. **Verified
+end-to-end**: loop 1's `selfcal_part1`+`selfcal_part2` both completed successfully with this fix (loop
+advanced to 2, `.gcal1` phase caltable produced, new `im_1.pixmask` generated for loop 2). Phase 7b's
+checkpoint-chaining design (below) should still carry forward the general lesson — never assume leftover
+on-disk state from a previous attempt is safe to reuse, clean up explicitly — even though the specific bug
+that taught it is now fixed.
 
 **Confirmed canonical HI workflow** (from the user, and already what the default config's arrays encode):
 loop 0 = dirty image, used only to derive an initial clean mask (no calibration); loop 1 = image using
@@ -322,13 +335,18 @@ Reference implementation: `m2-image-scripts/` already exists as a working-but-ha
   actual `tclean` call). Instead: split one selfcal stage's `niter` budget across multiple sequential sbatch
   jobs chained with the existing `-d afterany` dependency pattern, warm-started via `restart=True` on the
   same imagename across jobs (`calcres=False` on resume, to avoid recomputing an already-current residual).
-  **Caution carried over from the Phase 2 bugfix**: this session found `calcpsf=False` unsafe under
-  `parallel=True` — the per-engine data selection needed to apply imaging weights during the major cycle is
-  only registered when the PSF is actually (re)computed, regardless of whether the stale PSF came from a
-  cross-image symlink or same-imagename continuation. Don't assume same-imagename resume is exempt just
-  because it isn't a symlink — validate a minimal `calcpsf=False, calcres=False, restart=True` resume of the
-  same imagename under `parallel=True` in isolation (small MS, cheap stage) *before* building the full
-  checkpoint-chain on top of it. If it hits the identical MPI registration failure, default every resumed
+  **Caution carried over from the Phase 2 bugfix** (now root-caused and fixed, see the Phase 2 correction
+  above): the actual bug wasn't `calcpsf=False` per se -- it was `tclean`'s `restart=True`+`parallel=True`
+  path getting inconsistent per-engine PSF/weight registration whenever it found a pre-existing
+  `.psf`/`.sumwt` at the target imagename path that wasn't genuinely fresh for *this* run, whether that came
+  from an intentional cross-image symlink (the original `symlink_psf()` design) or stale leftover state from
+  a previous crashed attempt (what actually bit us). The general lesson still applies here: same-imagename
+  resume across chained jobs is exactly this scenario again (a deliberately pre-existing `.psf`/`.sumwt` at
+  the target path from the *previous* job in the chain) -- don't assume it's exempt just because it's a
+  same-imagename continuation rather than a symlink. Validate a minimal `calcpsf=False, calcres=False,
+  restart=True` resume of the same imagename under `parallel=True` in isolation (small MS, cheap stage)
+  *before* building the full checkpoint-chain on top of it. If it hits the identical MPI registration
+  failure, default every resumed
   job to `calcpsf=True` as well (cheap relative to a whole major cycle — the same trade the Phase 2 bugfix
   made) rather than relying on `calcres=False`-only resume. `tclean` already stops early on threshold
   regardless of `niter` budget, so chaining itself is safe either way. No new SLURM-array infrastructure
