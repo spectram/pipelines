@@ -1450,7 +1450,7 @@ def format_args(config,submit,quiet,dependencies,justrun):
         logger.warning("Cross-hand calibration scripts 'xy_yx_*' found in scripts. Forcing dopol=True in '[run]' section of '{0}'.".format(config))
         config_parser.overwrite_config(config, conf_dict={'dopol' : True}, conf_sec='run', sec_comment='# Internal variables for pipeline execution')
 
-    includes_partition = any('partition' in script for script in kwargs['scripts'])
+    includes_partition = any(script_registry.get_properties(script).is_spw_fanout for script in kwargs['scripts'])
     #If single correctly formatted spw, split into nspw directories, and process each spw independently
     if nspw > 1:
         #Write timestamp to this pipeline run
