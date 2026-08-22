@@ -17,32 +17,60 @@ ea230a6 Phase 1 (2e/5): migrate write_sbatch()'s long-partition override to scri
 ed18bb7 Phase 1 (3/5): migrate write_master()/write_spw_master() to script_registry
 fd1db51 Move the refactor plan into the repo for cross-session handoff
 a062602 Fix selfcal_part1 crash: clean up stale per-loop products before retrying (cherry-picked from HI-pawsey 543363b)
+204353e Update REFACTOR_PLAN.md: HI-pawsey selfcal_part1 crash is now resolved
+567fab7 Make golden_diff.sh robust to the checkout's absolute path
+0e3c9ef Phase 1 (4a/5): migrate format_args()'s selfcal-present check to script_registry
+5b818bd Phase 1 (4b/5): migrate format_args()'s calc_refant.py dedup check to script_registry
+4b17741 Phase 1 (4c/5): migrate format_args()'s split.py threadsafety override to script_registry
+fe57425 Phase 1 (4d/5): migrate format_args()'s dopol-forcing check to script_registry
+ca9e44f Phase 1 (4e/5): migrate format_args()'s includes_partition check to script_registry
+9f026f7 Phase 1 (5/5): migrate default_config()'s remove_scripts hack to script_registry
 ```
 
-**Done**: Phase 0 (container recipe + `tools/golden_diff.sh` harness) and Phase 1 items 1–3 of 5
-(`write_command()`'s array-job check, `write_sbatch()`'s five heuristics, `write_master()`/
-`write_spw_master()`'s script-name checks + a de-duplicated `expand_selfcal_loop_scripts()` helper). Every
-commit verified against `tools/golden_diff.sh` (run it — `./tools/golden_diff.sh` — before and after any
-change to `write_command`/`write_sbatch`/`write_master`/`write_spw_master`/`format_args`; no diff means no
-regression). Some commits also needed a manual spot-check beyond the harness where the fixture config
-(`tools/golden_diff/fixture_config.txt`, `nspw=1`) doesn't exercise a branch (e.g. the `nspw>1` array-job
-path, `dopol=True`) — see individual commit messages for exactly what was checked and how.
+(4a–5 above were landed by an unattended cloud agent session; it hit its account's usage-session
+limit partway through leaving 5/5 uncommitted in its worktree, which was then verified, committed, and
+pushed directly rather than re-launching a new agent for one small piece.)
 
-**Next step**: Phase 1 item 4 — migrate `format_args()`'s selfcal/threadsafety/dopol/dedup checks to
-`script_registry`, then item 5 — `default_config()`'s `remove_scripts` hack. After that, Phase 2 (the
-self-calibration stage-list restructuring) is next in sequence.
+**Done: all of Phase 1.** The script-property registry (`processMeerKAT/script_registry.py`) exists and
+every substring-matching-on-script-filename call site identified at the start of Phase 1 — in
+`write_command()`, `write_sbatch()`, `write_master()`/`write_spw_master()`, `format_args()`, and
+`default_config()` — is now migrated to read from it instead. Every commit verified against
+`tools/golden_diff.sh` (run it — `./tools/golden_diff.sh` — before and after any change to
+`write_command`/`write_sbatch`/`write_master`/`write_spw_master`/`format_args`; no diff means no
+regression); `default_config()`'s migration (5/5) isn't reachable by that harness (`-B` needs a real MS,
+which the harness deliberately doesn't exercise) and was instead verified with a one-off snippet comparing
+old vs. new logic across all four `do2GC`/`science_image` combinations. Several other commits similarly
+needed a manual spot-check beyond the harness where the fixture config
+(`tools/golden_diff/fixture_config.txt`, `nspw=1`) doesn't exercise a branch (e.g. `nspw>1`, `dopol=True`,
+`keepmms=False`) — see individual commit messages for exactly what was checked and how.
 
-**`HI-pawsey`'s `selfcal_part1` crash is now actually resolved** (as of `HI-pawsey` commit `543363b`,
-cherry-picked here as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)"
-callout describing an intermediate state where the first fix attempt (`0013ebe`, forcing `calcpsf=True`)
-turned out *not* to fix the crash — that callout is now superseded by the real root cause and fix described
-right after it (leftover stale `imagename.psf`/`.sumwt` files from a previous crashed attempt confusing
-`tclean`'s `restart=True` path regardless of `calcpsf`; fixed by deleting `imagename.*` before every
-`tclean` call in `selfcal_part1.py`). The full 4-stage HI loop (`selfcal_part1`/`selfcal_part2` for loop 1)
-has been run successfully end-to-end on `HI-pawsey` with this fix in place. Phase 2's stage-list
-restructuring is unaffected either way (it was always a readability win independent of the bug); Phase 7b's
-checkpoint-chaining design should still apply the same "always clean up, never assume leftover state is
-safe to reuse" lesson when it's implemented, even though the specific bug that taught it is now fixed.
+`567fab7` is a fix to the harness itself, not the pipeline: `tools/golden_diff.sh` was comparing generated
+`.sbatch` output byte-for-byte including the absolute checkout path embedded in it (`PYTHONPATH`, the
+script's own path), so running it from a different checkout location (e.g. a worktree-isolated agent
+session under `.claude/worktrees/<id>/`) produced spurious diffs with zero actual code change. Now
+normalizes the absolute path immediately preceding `/processMeerKAT` to a fixed placeholder before
+comparing, on both sides. Worth knowing about if you ever see the harness disagree with itself between two
+checkouts of the identical commit.
+
+**Next step**: Phase 2 (the self-calibration stage-list restructuring) is next in sequence — see its full
+write-up below. There's a stray git worktree at `.claude/worktrees/agent-a52e6fc8f4994bd7e/` (branch
+`pawsey-refactor`, currently in sync with `origin/pawsey-refactor`) left over from the cloud agent session
+above; safe to `git worktree remove` once you've confirmed nothing else needs it, or reuse it if resuming
+that same agent.
+
+**`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
+as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
+intermediate state where the first fix attempt (`0013ebe`, forcing `calcpsf=True`) turned out *not* to fix
+the crash — that callout is now superseded by the real root cause and fix described right after it
+(leftover stale `imagename.psf`/`.sumwt` files from a previous crashed attempt confusing `tclean`'s
+`restart=True` path regardless of `calcpsf`; fixed by deleting `imagename.*` before every `tclean` call in
+`selfcal_part1.py`). The full 4-stage HI loop has since been run successfully end-to-end on `HI-pawsey`
+through loop 2 (`selfcal_part1`/`selfcal_part2` for both loops 1 and 2); loop 3 (the final deep clean,
+`niter=1000000`) is next and is the one to watch for Phase 7b's 24h-walltime-cap concern, since unlike
+loops 1–2 it isn't expected to stop early on threshold. Phase 2's stage-list restructuring is unaffected
+either way (it was always a readability win independent of the bug); Phase 7b's checkpoint-chaining design
+should still apply the same "always clean up, never assume leftover state is safe to reuse" lesson when
+it's implemented, even though the specific bug that taught it is now fixed.
 
 `HI-pawsey` has been pushed to `origin/HI-pawsey` through `543363b` (includes `2077eae` CLAUDE.md, `0013ebe`
 the calcpsf change, and `543363b` the actual fix) — check `git log origin/HI-pawsey..HI-pawsey` if picking
@@ -131,9 +159,16 @@ harness:
 3. `write_master()`/`write_spw_master()`'s script-name checks — replace with `pipeline_role` lookups and
    de-duplicate the two near-identical `nloops`-replication blocks into one shared helper. **Done**
    (`ed18bb7`).
-4. `format_args()`'s selfcal/threadsafety/dopol/dedup checks. **Not started — next step.**
-5. `default_config()`'s `remove_scripts` hack — replace with `is_science_imaging`/`is_hi_imaging`/
-   `is_contsub_step` flags (needed by Phase 4/5 anyway). **Not started.**
+4. `format_args()`'s selfcal/threadsafety/dopol/dedup checks. **Done** (`0e3c9ef`, `5b818bd`,
+   `4b17741`, `fe57425`, `ca9e44f` — split into 5 sub-commits, one per distinct check, following the same
+   granularity as item 2).
+5. `default_config()`'s `remove_scripts` hack. **Done** (`9f026f7`) — implemented as a `pipeline_role`-keyed
+   filter (`remove_roles` set + list comprehension) rather than the dedicated `is_science_imaging`/
+   `is_hi_imaging`/`is_contsub_step` boolean flags originally sketched here: `pipeline_role` already
+   distinguishes `'selfcal_part1'`/`'selfcal_part2'`/`'science_image'` individually, so a set of roles to
+   drop is simpler than three new single-purpose flags that would just re-encode the same three role names.
+   Phase 4/5 (`-H` flag gating, uvsub/uvcontsub decoupling) should reuse this same `remove_roles`-style
+   pattern rather than reintroducing the flags this superseded.
 
 ## Phase 2 — Self-calibration stage list: replace `loop`/`nloops` indexing (goal 5)
 
