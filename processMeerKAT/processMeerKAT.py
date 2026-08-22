@@ -623,13 +623,10 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         params['mem'] = min(node_mem_cap_gb, int(params['cpus'] * tasks * MEM_PER_CPU_MB_SHARED / 1024))
 
     #Use xvfb for plotting scripts
-    plot = ('plot' in script)
-    if script == 'validate_input.py':
+    properties = script_registry.get_properties(script)
+    plot = properties.plot
+    if not properties.casa_invocation:
         casa_script = False
-        casacore = True
-    elif 'bdsf' in script or 'column' in script: #hack for 'add_MS_column' and 'copy_MS_column' scripts
-        casa_script = False
-        casacore = False
 
     #Limit number of concurrent jobs for partition so that no more than 200 CPUs used at once
     nconcurrent = int(200 / (params['nodes'] * params['tasks'] * params['cpus']))
