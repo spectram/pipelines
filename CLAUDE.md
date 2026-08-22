@@ -11,7 +11,9 @@ is an in-progress port to Pawsey's Setonix (Cray/HPE Shasta, Slurm), currently b
 HI/spectral-line workflows rather than the original multi-SPW continuum default.
 
 Branches: `master`/`dev` (upstream Ilifu), `HI-dev` (HI-focused work off dev), `HI-pawsey` (Pawsey port,
-active), `casa6`, `selfcal_dev`.
+active), `pawsey-refactor` (architectural refactor of the Pawsey port, forked off `HI-pawsey`'s tip; see
+`REFACTOR_PLAN.md` on that branch for the phased plan and current progress before starting work there),
+`casa6`, `selfcal_dev`.
 
 ## Environment setup
 
