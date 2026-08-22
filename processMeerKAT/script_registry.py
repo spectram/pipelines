@@ -88,18 +88,24 @@ REGISTRY = {
 def get_properties(script):
 
     """Look up a script's declared ScriptProperties by filename (basename, with or without
-    a directory prefix). Unknown scripts (e.g. user-supplied custom scripts passed via -S)
-    get all-default ScriptProperties(), matching today's behaviour of simply not matching
-    any of the substring checks this registry replaces.
+    a directory prefix, and with either a '.py' or '.sbatch' extension -- write_master()/
+    write_spw_master() operate on the generated '<script>.sbatch' filenames rather than the
+    original '<script>.py'). Unknown scripts (e.g. user-supplied custom scripts passed via
+    -S) get all-default ScriptProperties(), matching today's behaviour of simply not
+    matching any of the substring checks this registry replaces.
 
     Arguments:
     ----------
     script : str
-        Script filename (e.g. 'selfcal_part1.py'), optionally with a directory prefix.
+        Script filename (e.g. 'selfcal_part1.py' or 'selfcal_part1.sbatch'), optionally
+        with a directory prefix.
 
     Returns:
     --------
     properties : class ``ScriptProperties``"""
 
     import os
-    return REGISTRY.get(os.path.basename(script), ScriptProperties())
+    basename = os.path.basename(script)
+    if basename.endswith('.sbatch'):
+        basename = basename[:-len('.sbatch')] + '.py'
+    return REGISTRY.get(basename, ScriptProperties())

@@ -685,6 +685,59 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         config.close()
         logger.debug('Wrote sbatch file "{0}"'.format(sbatch))
 
+def expand_selfcal_loop_scripts(scripts,config,handle_run_sofia=False):
+
+    """Replicate a configured selfcal_part1.sbatch/selfcal_part2.sbatch pair in a script
+    list 'nloops' times (accounting for a nonzero starting loop), so a single
+    [selfcal_part1.py, selfcal_part2.py] pair in the configured scripts list expands into a
+    full self-cal loop chain. Shared by write_master() and write_spw_master() (previously
+    two near-identical inline blocks).
+
+    Arguments:
+    ----------
+    scripts : list (of str)
+        List of '<script>.sbatch' filenames.
+    config : str
+        Path to config file.
+    handle_run_sofia : bool, optional
+        Also move a 'run_sofia.sbatch' immediately following the selfcal pair inside the
+        replicated block, so it runs once per loop rather than only after the last one
+        (write_master()'s behaviour; write_spw_master() does not do this).
+
+    Returns:
+    --------
+    scripts : list (of str)
+        The (possibly expanded) script list."""
+
+    def has_role(s,role):
+        return script_registry.get_properties(s).pipeline_role == role
+
+    if not (config_parser.has_section(config,'selfcal') and any(has_role(s,'selfcal_part1') for s in scripts)
+            and any(has_role(s,'selfcal_part2') for s in scripts)):
+        return scripts
+
+    start_loop = config_parser.get_key(config, 'selfcal', 'loop')
+    selfcal_loops = config_parser.get_key(config, 'selfcal', 'nloops') - start_loop
+    part1_idx = next(i for i,s in enumerate(scripts) if has_role(s,'selfcal_part1'))
+    part2_idx = next(i for i,s in enumerate(scripts) if has_role(s,'selfcal_part2'))
+
+    #check that we're doing nloops in order, otherwise don't duplicate scripts
+    if part2_idx != part1_idx + 1:
+        return scripts
+
+    part1_name, part2_name = scripts[part1_idx], scripts[part2_idx]
+    init_scripts = scripts[:part2_idx+1]
+    final_scripts = scripts[part2_idx+1:]
+    init_scripts.extend([part1_name,part2_name]*(selfcal_loops-1))
+    if handle_run_sofia and len(final_scripts) > 0 and has_role(final_scripts[0],'run_sofia'):
+        sofia_name = final_scripts.pop(0)
+        init_scripts.append(sofia_name)
+        init_scripts.append(part1_name)
+        init_scripts.append(part2_name)
+    else:
+        init_scripts.append(part1_name)
+    return init_scripts + final_scripts
+
 def write_spw_master(filename,config,SPWs,precal_scripts,postcal_scripts,submit,dir='jobScripts',pad_length=5,dependencies='',timestamp='',slurm_kwargs={}):
 
     """Write master master script, which separately calls each of the master scripts in each SPW directory.
@@ -732,12 +785,12 @@ def write_spw_master(filename,config,SPWs,precal_scripts,postcal_scripts,submit,
         master.write('\n#{0}\n'.format(script))
         master.write("allSPWIDs+=,$({0} {1} | cut -d ' ' -f4)\n".format(command,script))
 
-    if 'calc_refant.sbatch' in precal_scripts:
+    if any(script_registry.get_properties(s).pipeline_role == 'calc_refant' for s in precal_scripts):
         master.write('echo Calculating reference antenna, and copying result to SPW directories.\n')
-    if 'partition.sbatch' in precal_scripts:
+    if any(script_registry.get_properties(s).is_spw_fanout for s in precal_scripts):
         master.write('echo Running partition job array, iterating over {0} SPWs.\n'.format(len(SPWs.split(','))))
 
-    partition = len(precal_scripts) > 0 and 'partition' in precal_scripts[-1]
+    partition = len(precal_scripts) > 0 and script_registry.get_properties(precal_scripts[-1]).is_spw_fanout
     if partition:
         master.write('\npartitionID=$(echo $allSPWIDs | cut -d , -f{0})\n'.format(len(precal_scripts)))
 
@@ -772,23 +825,9 @@ def write_spw_master(filename,config,SPWs,precal_scripts,postcal_scripts,submit,
             master.write("IDs+=,$(echo $output | sed 's/.*IDs\:\s\(.*\)/\\1/')")
         master.write('\ncd ..\n\n')
 
-    if 'concat.sbatch' in postcal_scripts:
+    if any(script_registry.get_properties(s).pipeline_role == 'concat' for s in postcal_scripts):
         master.write('echo Will concatenate MSs/MMSs and create quick-look continuum cube across all SPWs for all fields from \"{0}\".\n'.format(config))
-    scripts = postcal_scripts[:]
-
-    #Hack to perform correct number of selfcal loops
-    if config_parser.has_section(config,'selfcal') and 'selfcal_part1.sbatch' in scripts and 'selfcal_part2.sbatch' in scripts:
-        start_loop = config_parser.get_key(config, 'selfcal', 'loop')
-        selfcal_loops = config_parser.get_key(config, 'selfcal', 'nloops') - start_loop
-        idx = scripts.index('selfcal_part2.sbatch')
-
-        #check that we're doing nloops in order, otherwise don't duplicate scripts
-        if idx == scripts.index('selfcal_part1.sbatch') + 1:
-            init_scripts = scripts[:idx+1]
-            final_scripts = scripts[idx+1:]
-            init_scripts.extend(['selfcal_part1.sbatch','selfcal_part2.sbatch']*(selfcal_loops-1))
-            init_scripts.append('selfcal_part1.sbatch')
-            scripts = init_scripts + final_scripts
+    scripts = expand_selfcal_loop_scripts(postcal_scripts[:], config)
 
     if len(scripts) > 0:
         command = "sbatch -d afterany:${IDs//,/:}"
@@ -891,25 +930,8 @@ def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_le
         master.write("\necho Copying \'{0}\' to \'{1}\', and using this to run pipeline.\n".format(config,TMP_CONFIG))
     master.write('cp {0} {1}\n'.format(config, TMP_CONFIG))
 
-    #Hack to perform correct number of selfcal loops
-    if config_parser.has_section(config,'selfcal') and 'selfcal_part1.sbatch' in scripts and 'selfcal_part2.sbatch' in scripts:
-        start_loop = config_parser.get_key(config, 'selfcal', 'loop')
-        selfcal_loops = config_parser.get_key(config, 'selfcal', 'nloops') - start_loop
-        idx = scripts.index('selfcal_part2.sbatch')
-
-        #check that we're doing nloops in order, otherwise don't duplicate scripts
-        if idx == scripts.index('selfcal_part1.sbatch') + 1:
-            init_scripts = scripts[:idx+1]
-            final_scripts = scripts[idx+1:]
-            init_scripts.extend(['selfcal_part1.sbatch','selfcal_part2.sbatch']*(selfcal_loops-1))
-            if 'run_sofia.sbatch' in scripts and scripts.index('run_sofia.sbatch')==idx+1:
-                final_scripts.remove('run_sofia.sbatch')
-                init_scripts.append('run_sofia.sbatch')
-                init_scripts.append('selfcal_part1.sbatch')
-                init_scripts.append('selfcal_part2.sbatch')
-            else:
-                init_scripts.append('selfcal_part1.sbatch')
-            scripts = init_scripts + final_scripts
+    #Expand a configured selfcal_part1/selfcal_part2 pair into the full loop chain
+    scripts = expand_selfcal_loop_scripts(scripts, config, handle_run_sofia=True)
 
     command = 'sbatch'
 
