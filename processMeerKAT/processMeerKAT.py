@@ -1396,8 +1396,10 @@ def format_args(config,submit,quiet,dependencies,justrun):
             logger.warning('Appending "precal_scripts" to beginning of "scripts", and "postcal_scripts" to end of "scripts", since nspw=1. Overwritting this in "{0}".'.format(config))
 
             #Drop first instance of calc_refant.py from precal scripts in preference for one in scripts (after flag_round_1.py)
-            if 'calc_refant.py' in [i[0] for i in kwargs['precal_scripts']] and 'calc_refant.py' in [i[0] for i in kwargs['scripts']]:
-                kwargs['precal_scripts'].pop([i[0] for i in kwargs['precal_scripts']].index('calc_refant.py'))
+            if (any(script_registry.get_properties(i[0]).pipeline_role == 'calc_refant' for i in kwargs['precal_scripts']) and
+                    any(script_registry.get_properties(i[0]).pipeline_role == 'calc_refant' for i in kwargs['scripts'])):
+                kwargs['precal_scripts'].pop(next(idx for idx, i in enumerate(kwargs['precal_scripts'])
+                                                   if script_registry.get_properties(i[0]).pipeline_role == 'calc_refant'))
 
             scripts = kwargs['precal_scripts'] + kwargs['scripts'] + kwargs['postcal_scripts']
             config_parser.overwrite_config(config, conf_dict={'scripts' : scripts}, conf_sec='slurm')
