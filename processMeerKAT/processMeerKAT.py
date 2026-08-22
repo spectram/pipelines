@@ -571,7 +571,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
 
     #Use multiple CPUs for tclean and partition scripts
     params['cpus'] = 1
-    if 'tclean' in script or 'selfcal' in script or 'image' in script or 'flag' in script or 'partition' in script:
+    if script_registry.get_properties(script).cpu_intensive:
         cpus = int(CPUS_PER_NODE_LIMIT/tasks)
         params['cpus'] = cpus
         
