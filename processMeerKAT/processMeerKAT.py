@@ -1446,7 +1446,7 @@ def format_args(config,submit,quiet,dependencies,justrun):
         mem = int(mem // (nspw/2))
 
     dopol = config_parser.get_key(config, 'run', 'dopol')
-    if not dopol and ('xy_yx_solve.py' in kwargs['scripts'] or 'xy_yx_apply.py' in kwargs['scripts']):
+    if not dopol and any(script_registry.get_properties(s).forces_dopol for s in kwargs['scripts']):
         logger.warning("Cross-hand calibration scripts 'xy_yx_*' found in scripts. Forcing dopol=True in '[run]' section of '{0}'.".format(config))
         config_parser.overwrite_config(config, conf_dict={'dopol' : True}, conf_sec='run', sec_comment='# Internal variables for pipeline execution')
 
