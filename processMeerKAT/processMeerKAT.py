@@ -576,7 +576,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         params['cpus'] = cpus
         
     #hard-code for 2/4 polarisations
-    if 'partition' in script:
+    if script_registry.get_properties(script).is_spw_fanout:
         dopol = config_parser.get_key(TMP_CONFIG, 'run', 'dopol')
         if dopol and 4*tasks < CPUS_PER_NODE_LIMIT:
             params['cpus'] = 4
