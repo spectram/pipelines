@@ -139,6 +139,26 @@ CONTAINER_BINDS = {
     CONTAINER: ['/var/spool/slurmd'],
 }
 
+#Container-specific vars to PREPEND to (not replace) via a host-side shell `export` inserted
+#before the singularity exec call, rather than via `singularity exec --env`. The site's
+#singularity module sets SINGULARITYENV_LD_LIBRARY_PATH to a long list of Cray MPI/fabric
+#library paths ending in a literal, unexpanded '$LD_LIBRARY_PATH' (resolved by singularity at
+#container-entry time, not by the calling shell) -- confirmed empirically that
+#`--env LD_LIBRARY_PATH=...` does NOT compose with this mechanism, it silently replaces it,
+#dropping the Cray paths (a latent risk for multi-node MPI, though not yet observed to break our
+#current single-node jobs). Exporting SINGULARITYENV_LD_LIBRARY_PATH ourselves beforehand, with
+#our addition prepended to the *current* value of that same host-side variable, preserves the
+#trailing '$LD_LIBRARY_PATH' token intact and correctly composes with the site's own value.
+CONTAINER_PREPEND_ENV = {
+    CONTAINER: {
+        #idianext.sif's python-casacore image-writing extension (casacore.images, used by
+        #PyBDSF's CASA-format mask export in selfcal_part2.py) needs libcasa_python3.so.8/
+        #libcasa_images.so.8/libcasa_casa.so.8 from the container's own casacore 3.7.1 build,
+        #which isn't on the default library search path.
+        'LD_LIBRARY_PATH': '/opt/casacore/lib',
+    },
+}
+
 MPI_WRAPPER = 'srun'
 PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts run before calibration at top level directory when nspw > 1
 POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''), \
@@ -470,6 +490,10 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
 
     params['env_flags'] = ''.join(' --env {0}={1}'.format(k, v) for k, v in CONTAINER_ENV.get(container, {}).items())
     params['env_flags'] += ''.join(' --bind {0}'.format(b) for b in CONTAINER_BINDS.get(container, []))
+    #Emitted as host-side `export`s (see CONTAINER_PREPEND_ENV) rather than `--env`, so they
+    #compose with (rather than clobber) any same-named SINGULARITYENV_* the site module sets.
+    params['prepend_env'] = ''.join('export SINGULARITYENV_{0}="{1}:$SINGULARITYENV_{0}"\n'.format(k, v)
+                                     for k, v in CONTAINER_PREPEND_ENV.get(container, {}).items())
 
     if arrayJob:
         command += """#Iterate over SPWs in job array, launching one after the other
@@ -479,7 +503,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
 
         """ % SPWs.replace(',',' ').replace(SPW_PREFIX,'')
 
-    command += "{mpi_wrapper} -c {cpus} singularity exec{env_flags} {container} {plot_call} {casa_call} {script} {args}".format(**params)
+    command += "{prepend_env}{mpi_wrapper} -c {cpus} singularity exec{env_flags} {container} {plot_call} {casa_call} {script} {args}".format(**params)
 
     if arrayJob:
         command += '\ncd ..\n'
@@ -570,6 +594,16 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     #whatever cpu count a script's parallelism heuristic happened to pick.
     if 'selfcal_part1' in script:
         params['exclusive'] = '\n#SBATCH --exclusive'
+        #Setonix's --exclusive admission control additionally requires ntasks-per-node to evenly
+        #partition the node's physical cores (128, i.e. CPUS_PER_NODE_LIMIT*2 SMT threads) --
+        #confirmed empirically: --ntasks-per-node=9 (this pipeline's scan-count-driven default,
+        #irrelevant to core topology) is rejected outright with "Requested node configuration is
+        #not available" under --exclusive, while 8 (a power of two, divides 128 evenly) succeeds,
+        #even though sbatch --test-only passes for either and never catches this. Round down to
+        #the nearest power of two so this always binds regardless of the configured task count.
+        tasks = 2 ** int(math.log2(max(1, tasks)))
+        params['tasks'] = tasks
+        params['cpus'] = int(CPUS_PER_NODE_LIMIT / tasks)
         if params['partition'] == 'HighMem':
             params['mem'] = MEM_PER_NODE_GB_LIMIT_HIGHMEM
         else:
