@@ -1352,7 +1352,7 @@ def format_args(config,submit,quiet,dependencies,justrun):
         nspw = 1
 
     #Check selfcal params
-    if config_parser.has_section(config,'selfcal') and ('selfcal_part1.py' in [i[0] for i in kwargs['postcal_scripts']] or 'selfcal_part1.py' in [i[0] for i in kwargs['scripts']]):
+    if config_parser.has_section(config,'selfcal') and (any(script_registry.get_properties(i[0]).pipeline_role == 'selfcal_part1' for i in kwargs['postcal_scripts']) or any(script_registry.get_properties(i[0]).pipeline_role == 'selfcal_part1' for i in kwargs['scripts'])):
         selfcal_kwargs = get_config_kwargs(config, 'selfcal', SELFCAL_CONFIG_KEYS)
         params = bookkeeping.get_selfcal_params()
         if selfcal_kwargs['loop'] > 0:
