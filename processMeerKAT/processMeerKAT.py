@@ -1430,8 +1430,9 @@ def format_args(config,submit,quiet,dependencies,justrun):
 
     elif not crosscal_kwargs['keepmms']:
         #Set threadsafe=False for split and postcal scripts (since working with MS not MMS).
-        if 'split.py' in kwargs['scripts']:
-            kwargs['threadsafe'][kwargs['scripts'].index('split.py')] = False
+        split_indices = [idx for idx, s in enumerate(kwargs['scripts']) if script_registry.get_properties(s).pipeline_role == 'split']
+        if split_indices:
+            kwargs['threadsafe'][split_indices[0]] = False
         if nspw != 1:
             kwargs['threadsafe'][kwargs['num_precal_scripts']:] = [False]*len(kwargs['postcal_scripts'])
 
