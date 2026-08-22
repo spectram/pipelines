@@ -644,7 +644,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     params['exclude'] = '\n#SBATCH --exclude={0}'.format(exclude) if exclude != '' else ''
     params['reservation'] = '\n#SBATCH --reservation={0}'.format(reservation) if reservation != '' else ''
 
-    if 'selfcal' in script or 'image' in script:
+    if properties.long_running:
         params['command'] = 'ulimit -n 16384\n' + params['command']
         params['partition'] = 'long'
 
