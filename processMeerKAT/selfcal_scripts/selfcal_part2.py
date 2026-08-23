@@ -11,6 +11,7 @@ import numpy as np
 import config_parser
 from config_parser import validate_args as va
 import bookkeeping
+import selfcal_stages
 import processMeerKAT
 
 from astropy.coordinates import SkyCoord
@@ -33,39 +34,42 @@ logging.Formatter.converter = gmtime
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=logging.INFO)
 
-def selfcal_part2(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojplanes, niter, threshold, uvrange,
-                  nterms, gridder, deconvolver, solint, calmode, discard_nloops, gaintype, outlier_threshold, outlier_radius, flag,\
+def selfcal_part2(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplanes, uvrange,
+                  nterms, gridder, deconvolver, discard_nloops, gaintype, outlier_threshold, outlier_radius, flag,\
                       atrous_do,flag_maxsize_bm, scales, usermask):
 
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,_,_,_,_ = \
-        bookkeeping.get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,outlier_threshold,\
-            outlier_radius,threshold,usermask=usermask,step='predict')
-        
+        bookkeeping.get_selfcal_args(vis,loop,stages,nterms,deconvolver,discard_nloops,outlier_threshold,\
+            outlier_radius,usermask=usermask,step='predict')
+
     if os.path.exists(outlierfile) and open(outlierfile).read() == '':
         outlierfile = ''
 
-    if calmode[loop] != '' or loop==nloops:
+    nloops = selfcal_stages.nloops(stages)
+    derive_cal = stages[loop].derive_cal
+
+    if derive_cal != '' or loop==nloops:
         if os.path.exists(caltable):
             logger.info('Caltable {0} exists. Not overwriting, continuing to next loop.'.format(caltable))
             exit(0)
         else:
             tclean(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
-                    imsize=imsize[loop], cell=cell[loop], stokes='I', gridder=gridder[loop],
-                    wprojplanes = wprojplanes[loop], deconvolver = deconvolver[loop],
-                    weighting='briggs', robust = robust[loop], threshold=threshold[loop],
-                    nterms=nterms[loop], pblimit=-1, mask=pixmask, outlierfile=outlierfile,
+                    imsize=imsize, cell=cell, stokes='I', gridder=gridder,
+                    wprojplanes = wprojplanes, deconvolver = deconvolver,
+                    weighting='briggs', robust = robust, threshold=threshold,
+                    nterms=nterms, pblimit=-1, mask=pixmask, outlierfile=outlierfile,
                     niter=0, savemodel='modelcolumn', restart=True, # cfcache=cfcache,
-                    restoration=False, calcpsf=False, calcres=False, parallel = False, scales=scales[loop])
+                    restoration=False, calcpsf=False, calcres=False, parallel = False, scales=scales)
 
-            solnorm = 'a' in calmode[loop]
+            solnorm = 'a' in derive_cal
             normtype='median' #if solnorm else 'mean'
             if loop < nloops:
-                gaincal(vis=vis, caltable=caltable, selectdata=True, refant = refant, solint=solint[loop], solnorm=solnorm,
+                gaincal(vis=vis, caltable=caltable, selectdata=True, refant = refant, solint=stages[loop].solint, solnorm=solnorm,
                         normtype=normtype,
-                        gaintype=gaintype[loop],
-                        uvrange=uvrange[loop],
+                        gaintype=gaintype,
+                        uvrange=uvrange,
                         gaintable=prev_caltables,
-                        calmode=calmode[loop], append=False, parang=False)
+                        calmode=derive_cal, append=False, parang=False)
     else:
         logger.warning("Skipping selfcal loop {0} since calmode == ''.".format(loop))
 
@@ -101,15 +105,15 @@ def pybdsf(imbase,rmsfile,imagename,outimage,thresh,maskfile,cat,\
         # Write out RMS image
         img.export_image(outfile=rmsfile, img_type='rms', img_format='casa', clobber=True)
 
-def find_outliers(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojplanes, niter, threshold, uvrange, nterms,
-                  gridder, deconvolver, solint, calmode, discard_nloops, gaintype, outlier_threshold, outlier_radius,\
+def find_outliers(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplanes, uvrange, nterms,
+                  gridder, deconvolver, discard_nloops, gaintype, outlier_threshold, outlier_radius,\
                       flag, atrous_do, flag_maxsize_bm, step, usermask, scales):
 
     local = locals()
     local.pop('step')
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,thresh,maskfile,\
-        targetfield,sky_model_radius = bookkeeping.get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,\
-            calmode,outlier_threshold,outlier_radius,threshold,step=step, usermask=usermask)
+        targetfield,sky_model_radius = bookkeeping.get_selfcal_args(vis,loop,stages,nterms,deconvolver,discard_nloops,\
+            outlier_threshold,outlier_radius,step=step, usermask=usermask)
     cat = imagename + ".catalog.fits"
     outlierfile_all = 'outliers.txt'
     fitsname = imagename + '.fits'
@@ -205,7 +209,7 @@ def find_outliers(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
                 phasecenter={3}
                 nterms={4}
                 gridder=standard
-                {5}\n""".format(imbase%(index),i,outlier_imsize,position,nterms[loop],mask))
+                {5}\n""".format(imbase%(index),i,outlier_imsize,position,nterms,mask))
 
             out.close()
 
@@ -235,8 +239,6 @@ def find_outliers(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
             index = loop
 
         #Update header to reflect image, and pop degenerate axes
-        imsize=imsize[index]
-        cell=cell[index]
         if type(imsize) is not list:
             imsize = [imsize, imsize]
         if type(cell) is not list:
@@ -287,7 +289,7 @@ def find_outliers(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
                     outlier_cat = base + ".catalog.fits"
                     outlier_mask = '{0}.islmask'.format(base)
 
-                    if deconvolver[loop] == 'mtmfs':
+                    if deconvolver == 'mtmfs':
                         im += '.tt0'
 
                     if os.path.exists(im):
@@ -344,7 +346,7 @@ def find_outliers(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
                 phasecenter={3}
                 nterms={4}
                 gridder=standard
-                {5}\n""".format(imbase%(index),i,outlier_imsize,phasecenter,nterms[loop],mask))
+                {5}\n""".format(imbase%(index),i,outlier_imsize,phasecenter,nterms,mask))
 
             else:
                 logger.info('Excluding "{0}", as it lies within the image footprint.'.format(outlier_bases[i]))
@@ -365,12 +367,12 @@ def find_outliers(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
 
     return rmsfile,outlierfile
 
-def mask_image(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojplanes, niter, threshold, uvrange, nterms, gridder,
-                  deconvolver, solint, calmode, discard_nloops, gaintype, outlier_threshold, \
+def mask_image(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplanes, uvrange, nterms, gridder,
+                  deconvolver, discard_nloops, gaintype, outlier_threshold, \
                       outlier_radius, flag, atrous_do, flag_maxsize_bm, scales, usermask, outlier_base='', outlier_image=''):
 
-    imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,thresh,maskfile,_,_ = bookkeeping.get_selfcal_args(vis,loop,nloops,nterms,\
-        deconvolver,discard_nloops,calmode,outlier_threshold,outlier_radius,threshold,usermask=usermask,step='mask')
+    imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,thresh,maskfile,_,_ = bookkeeping.get_selfcal_args(vis,loop,stages,nterms,\
+        deconvolver,discard_nloops,outlier_threshold,outlier_radius,usermask=usermask,step='mask')
 
     if outlier_base != '':
         maskfile = outlier_base + '.islmask'
@@ -417,7 +419,7 @@ if __name__ == '__main__':
     args,params = bookkeeping.get_selfcal_params()
     loop = params['loop']
     selfcal_part2(**params)
-    #if loop < params['nloops']:
+    #if loop < selfcal_stages.nloops(params['stages']):
     rmsmap,outlierfile = find_outliers(**params,step='bdsf')
     pixmask = mask_image(**params)
 
