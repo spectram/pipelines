@@ -637,6 +637,19 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         params['cpus'] = min(max(params['cpus'], mem_derived_cpus), max_cpus_per_task)
         params['mem'] = min(node_mem_cap_gb, int(params['cpus'] * tasks * MEM_PER_CPU_MB_SHARED / 1024))
 
+    #run_sofia.py is single-process/OpenMP-threaded (pipeline.threads in its SoFiA parameter
+    #file), not CASA/MPI -- the generic mem-driven cpu reconciliation above pulls it up to
+    #~18 cpus to unlock the configured [slurm] mem (32GB default), far more than SoFiA can
+    #actually use (confirmed: a real run on a 6144x6144 continuum image used ~144MB and only
+    #the 8 threads it was given). Fix cpus at 10 (matching a 10-thread SoFiA config) and cap
+    #mem proportionally so this doesn't violate Setonix's shared-node mem/cpu ratio. Also
+    #give it its own short walltime rather than the pipeline's general-purpose default --
+    #source-finding on a single continuum image is a matter of seconds to minutes, not hours.
+    if 'run_sofia' in script:
+        params['cpus'] = 10
+        params['mem'] = min(params['mem'], int(params['cpus'] * tasks * MEM_PER_CPU_MB_SHARED / 1024))
+        params['time'] = '02:00:00'
+
     #Use xvfb for plotting scripts
     properties = script_registry.get_properties(script)
     plot = properties.plot
