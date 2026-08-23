@@ -9,6 +9,7 @@ import shutil
 import config_parser
 from config_parser import validate_args as va
 import bookkeeping
+import selfcal_stages
 
 from casatasks import *
 logfile=casalog.logfile()
@@ -21,12 +22,12 @@ logging.Formatter.converter = gmtime
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=logging.INFO)
 
-def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojplanes, niter, threshold, uvrange, nterms,
-                  gridder, deconvolver, solint, calmode, discard_nloops, gaintype, outlier_threshold, outlier_radius, flag, \
+def selfcal_part1(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplanes, uvrange, nterms,
+                  gridder, deconvolver, discard_nloops, gaintype, outlier_threshold, outlier_radius, flag, \
                       atrous_do,flag_maxsize_bm, scales, usermask):
 
-    imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,_,_,_,_ = bookkeeping.get_selfcal_args(vis,loop,nloops,nterms,\
-        deconvolver,discard_nloops,calmode,outlier_threshold,outlier_radius,threshold,usermask=usermask,step='tclean')
+    imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,_,_,_,_ = bookkeeping.get_selfcal_args(vis,loop,stages,nterms,\
+        deconvolver,discard_nloops,outlier_threshold,outlier_radius,usermask=usermask,step='tclean')
 
     if os.path.exists(outlierfile) and open(outlierfile).read() == '':
         outlierfile = ''
@@ -36,16 +37,15 @@ def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
     if loop == 0:
         clearcal(vis=vis, addmodel=True)
 
-    if 1 <= loop <= nloops:
-        if len(prev_caltables) > 0 and calmode[loop-1] != '':
-            applycal(vis=vis, selectdata=False, gaintable=prev_caltables, parang=False, interp='linear,linearflag')
+    if selfcal_stages.should_apply_prev_cal(stages, loop) and len(prev_caltables) > 0:
+        applycal(vis=vis, selectdata=False, gaintable=prev_caltables, parang=False, interp='linear,linearflag')
 
-            if flag[loop-1]:
-                flagdata(vis=vis, mode='rflag', datacolumn='RESIDUAL', field='', timecutoff=5.0,
-                        freqcutoff=5.0, timefit='line', freqfit='line', flagdimension='freqtime',
-                        extendflags=False, timedevscale=3.0, freqdevscale=3.0, spectralmax=500,
-                        extendpols=False, growaround=False, flagneartime=False, flagnearfreq=False,
-                        action='apply', flagbackup=True, overwrite=True, writeflags=True)
+        if flag:
+            flagdata(vis=vis, mode='rflag', datacolumn='RESIDUAL', field='', timecutoff=5.0,
+                    freqcutoff=5.0, timefit='line', freqfit='line', flagdimension='freqtime',
+                    extendflags=False, timedevscale=3.0, freqdevscale=3.0, spectralmax=500,
+                    extendpols=False, growaround=False, flagneartime=False, flagnearfreq=False,
+                    action='apply', flagbackup=True, overwrite=True, writeflags=True)
 
     if os.path.exists(outimage):
         logger.info('Image "{0}" exists. Not overwriting, continuing to next loop.'.format(outimage))
@@ -76,11 +76,11 @@ def selfcal_part1(vis, refant, dopol, nloops, loop, cell, robust, imsize, wprojp
             else:
                 shutil.rmtree(product)
         tclean(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
-            imsize=imsize[loop], cell=cell[loop], stokes='I', gridder=gridder[loop],
-            wprojplanes = wprojplanes[loop], deconvolver = deconvolver[loop], restoration=True,
-            weighting='briggs', robust = robust[loop], niter=niter[loop], outlierfile=outlierfile,
-            threshold=threshold[loop], nterms=nterms[loop], calcpsf=True, # cfcache = cfcache,
-            pblimit=-1, mask=pixmask, parallel = True, scales=scales[loop])
+            imsize=imsize, cell=cell, stokes='I', gridder=gridder,
+            wprojplanes = wprojplanes, deconvolver = deconvolver, restoration=True,
+            weighting='briggs', robust = robust, niter=stages[loop].niter, outlierfile=outlierfile,
+            threshold=threshold, nterms=nterms, calcpsf=True, # cfcache = cfcache,
+            pblimit=-1, mask=pixmask, parallel = True, scales=scales)
 
 if __name__ == '__main__':
 
