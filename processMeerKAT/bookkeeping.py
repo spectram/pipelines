@@ -7,6 +7,7 @@ import sys
 import traceback
 
 import config_parser
+import selfcal_stages
 from collections import namedtuple
 import os
 import glob
@@ -110,8 +111,18 @@ def check_file(filepath):
 
 def get_selfcal_params():
 
-    #Flag for input errors
-    exit = False
+    """Parse the '[selfcal]' config section into kwargs for selfcal_part1()/
+    selfcal_part2()/find_outliers()/mask_image(), resolving 'stages' (a list of dicts, one
+    per self-cal loop -- see selfcal_stages.py) into a list of selfcal_stages.Stage.
+
+    Previously this also broadcast every scalar '[selfcal]' value into an ('nloops'+1)-long
+    list (the 'single_args'/'gaincal_args'/'list_args' machinery, deleted here -- see
+    REFACTOR_PLAN.md's Phase 2 write-up), so that per-loop-varying and never-varying
+    parameters alike were indexed the same way ('param[loop]') downstream. Now only the
+    keys that genuinely vary per loop (mask/apply_cal/derive_cal/niter/threshold/solint)
+    live in 'stages'; every other '[selfcal]' key is used directly as the plain scalar (or
+    list, e.g. imsize=[6144,6144]) the user configured, with no implicit replication and no
+    'nloops'-length validation to get wrong."""
 
     # Get the name of the config file
     args = config_parser.parse_args()
@@ -119,7 +130,6 @@ def get_selfcal_params():
     # Parse config file
     taskvals, config = config_parser.parse_config(args['config'])
     params = taskvals['selfcal']
-    other_params = list(params.keys())
 
     params['vis'] = taskvals['data']['vis']
     params['refant'] = taskvals['crosscal']['refant']
@@ -128,65 +138,30 @@ def get_selfcal_params():
     if params['dopol'] and 'G' in params['gaintype']:
         logger.warning("dopol is True, but gaintype includes 'G'. Use gaintype='T' for polarisation on linear feeds (e.g. MeerKAT).")
 
-    single_args = ['nloops','loop','discard_nloops','outlier_threshold','outlier_radius','atrous_do','flag_maxsize_bm','usermask'] #need to be 1 long (i.e. not a list)
-    gaincal_args = ['solint','calmode','gaintype','flag'] #need to be nloops long
-    list_args = ['imsize', 'scales'] #allowed to be lists of lists
-
-    for arg in single_args:
-        if arg in other_params:
-            other_params.pop(other_params.index(arg))
-
-    for arg in single_args:
-        if type(params[arg]) is list or type(params[arg]) is str and ',' in params[arg]:
-            logger.error("Parameter '{0}' in '{1}' cannot be a list. It must be a single value.".format(arg,args['config']))
-            exit = True
-
-    for arg in other_params:
-        if type(params[arg]) is str and ',' in params[arg]:
-            logger.error("Parameter '{0}' in '{1}' cannot use comma-seprated values. It must be a list or values, or a single value.".format(arg,args['config']))
-            exit = True
-
-        # These can be a list of lists or a simple list (if specifying a single value).
-        # So make sure these two cases are covered.
-        if arg in list_args:
-            # Not a list of lists, so turn it into one of right length
-            if type(params[arg]) is list and (len(params[arg]) == 0 or type(params[arg][0]) is not list):
-                params[arg] = [params[arg],] * (params['nloops'] + 1)
-            # Not a list at all, so put it into a list
-            elif type(params[arg]) is not list:
-                params[arg] = [[params[arg],],] * (params['nloops'] + 1)
-            # A list of lists of length 1, so put into list of lists of right length
-            elif type(params[arg]) is list and type(params[arg][0]) is list and len(params[arg]) == 1:
-                params[arg] = [params[arg][0],] * (params['nloops'] + 1)
-
-        elif type(params[arg]) is not list:
-            if arg in gaincal_args:
-                params[arg] = [params[arg]] * (params['nloops'] + 1) # +1 is a Hacky fix to avoid indexing errors
-            else:
-                params[arg] = [params[arg]] * (params['nloops'] + 1)
-
-    for arg in other_params:
-        #By this point params[arg] will be a list
-        if arg in gaincal_args and len(params[arg]) != params['nloops']+1:
-            logger.error("Parameter '{0}' in '{1}' is the wrong length. It is {2} long but must be 'nloops' ({3}) long or a single value (not a list).".format(arg,args['config'],len(params[arg]),params['nloops']))
-            exit = True
-
-        elif arg not in gaincal_args and len(params[arg]) != params['nloops'] + 1:
-            logger.error("Parameter '{0}' in '{1}' is the wrong length. It is {2} long but must be 'nloops' + 1 ({3}) long or a single value (not a list).".format(arg,args['config'],len(params[arg]),params['nloops']+1))
-            exit = True
-
-    if exit:
+    try:
+        params['stages'] = selfcal_stages.parse_stages(params['stages'])
+    except ValueError as err:
+        logger.error("Invalid 'stages' in '{0}': {1}".format(args['config'], err))
         sys.exit(1)
 
     return args,params
 
-def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,\
-    outlier_threshold,outlier_radius,threshold,step,usermask):
+def get_selfcal_args(vis,loop,stages,nterms,deconvolver,discard_nloops,\
+    outlier_threshold,outlier_radius,step,usermask):
+
+    """Resolve this loop's file/parameter bookkeeping from the stage list ('stages', a list
+    of selfcal_stages.Stage as returned by get_selfcal_params()) instead of indexing into
+    parallel arrays. 'nloops' is derived from len(stages), not passed separately; 'calmode'
+    and 'threshold' come from stages[loop] rather than being separate loop-indexed
+    arguments -- see selfcal_stages.py and REFACTOR_PLAN.md's Phase 2 write-up."""
 
     from casatools import msmetadata,quanta
     from read_ms import check_spw
     msmd = msmetadata()
     qa = quanta()
+
+    nloops = selfcal_stages.nloops(stages)
+    stage = stages[loop]
 
     if os.path.exists('{0}/SUBMSS'.format(vis)):
         tmpvis = glob.glob('{0}/SUBMSS/*'.format(vis))[0]
@@ -230,7 +205,7 @@ def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,\
     cfcache = basename + '.cf'
     thresh = 10
 
-    if deconvolver[loop] == 'mtmfs':
+    if deconvolver == 'mtmfs':
         outimage += '.tt0'
 
     if step not in ['tclean','sky'] and not os.path.exists(outimage):
@@ -238,9 +213,17 @@ def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,\
         sys.exit(1)
 
     if step in ['tclean','predict']:
-        pixmask = imbase % (loop-1) + '.pixmask'
+        pixmask = selfcal_stages.resolve_mask(stages, loop, imbase)
         rmsfile = imbase % (loop-1) + '.rms'
-    if step in ['tclean','predict','sky'] and ((loop == 0 and not os.path.exists(pixmask)) or (0 < loop < nloops and calmode[loop] == '')):
+    #Loop 0 (the dirty image) never has a previous-loop mask to fall back on; stage 0 is
+    #validated (selfcal_stages.parse_stages()) to never reference 'prev', so pixmask is
+    #already '' here for loop 0 via resolve_mask() above -- this check is a no-op for
+    #'tclean'/'predict' and only actually matters for 'sky' (see set_sky_model.py), where
+    #pixmask is still this loop's own not-yet-built mask file rather than a resolved 'prev'
+    #reference. Previously also blanked pixmask for an intermediate loop with an empty
+    #calmode ('0 < loop < nloops and calmode[loop] == \'\''); that's now the config
+    #author's explicit choice (mask=None on that stage) rather than something inferred here.
+    if step in ['tclean','predict','sky'] and (loop == 0 and not os.path.exists(pixmask)):
         pixmask = ''
     if (loop >= nloops) and (usermask!=''):
         if '.fits' in usermask:
@@ -261,7 +244,7 @@ def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,\
 
     #Check no missing caltables
     for i in range(0,loop):
-        if calmode[i] != '' and not os.path.exists(basename + '.gcal%d' % i):
+        if stages[i].derive_cal != '' and not os.path.exists(basename + '.gcal%d' % i):
             logger.error("Calibration table '{0}' doesn't exist, so self-calibration loop {1} failed. Will terminate selfcal process.".format(basename + '.gcal%d' % i,i))
             sys.exit(1)
     for i in range(discard_nloops):
@@ -291,18 +274,19 @@ def get_selfcal_args(vis,loop,nloops,nterms,deconvolver,discard_nloops,calmode,\
 
     msmd.done()
 
-    if not (type(threshold[loop]) is str and 'Jy' in threshold[loop]) and threshold[loop] > 1:
+    threshold = stage.threshold
+    if not (type(threshold) is str and 'Jy' in threshold) and threshold > 1:
         if step in ['tclean','predict']:
             if os.path.exists(rmsfile):
                 from casatasks import imstat
                 stats = imstat(imagename=rmsfile)
-                threshold[loop] *= stats['min'][0]
+                threshold = threshold * stats['min'][0]
             else:
-                logger.error("'{0}' doesn't exist. Can't do thresholding at S/N > {1}. Loop 0 must use an absolute threshold value. Check the logs to see why RMS map not created.".format(rmsfile,threshold[loop]))
+                logger.error("'{0}' doesn't exist. Can't do thresholding at S/N > {1}. Loop 0 must use an absolute threshold value. Check the logs to see why RMS map not created.".format(rmsfile,threshold))
                 sys.exit(1)
         elif step == 'bdsf':
-            thresh = threshold[loop]
-    
+            thresh = threshold
+
     return imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,\
         cfcache,thresh,maskfile,targetfield,sky_model_radius
 

@@ -57,25 +57,32 @@ badfreqranges = [ '933~960MHz',   # List of bad frequency ranges (to flag)
                   '1524~1630MHz']
 
 [selfcal]
-nloops = 3                        # Number of clean + bdsf loops.
+# Self-calibration stage list: one dict per loop (including loop 0, the initial dirty
+# image); nloops is derived as len(stages)-1, not configured separately. 'mask'/
+# 'apply_cal' are relative references -- None (don't use one) or 'prev' (use the
+# immediately preceding stage's mask / derived calibration). 'derive_cal' is the gaincal
+# calmode to solve for from this stage's image ('' to skip solving, 'p' for phase-only,
+# 'ap' for amplitude+phase). 'threshold' is a S/N value if >= 1.0, otherwise a CASA
+# quantity string (e.g. '0.5mJy'); 'solint' only matters when 'derive_cal' != ''. To
+# lengthen the self-cal chain, append another stage dict -- no other keys need editing.
+stages = [{'mask': None, 'apply_cal': None, 'derive_cal': '', 'niter': 10000, 'threshold': '0.5mJy'},
+          {'mask': 'prev', 'apply_cal': None, 'derive_cal': 'p', 'niter': 50000, 'threshold': 10, 'solint': '1min'},
+          {'mask': 'prev', 'apply_cal': 'prev', 'derive_cal': 'ap', 'niter': 80000, 'threshold': 5, 'solint': '10min'},
+          {'mask': 'prev', 'apply_cal': 'prev', 'derive_cal': '', 'niter': 1000000, 'threshold': 3}]
 loop = 0                          # If nonzero, adds this number to nloops to name images or continue previous run
 cell = '1.5arcsec'
 robust = -0.5
 imsize = [6144, 6144]
 wprojplanes = 512
-niter = [10000, 50000, 80000, 1000000]
-threshold = ['0.5mJy', 10, 5, 3]  # After loop 0, S/N values if >= 1.0, otherwise Jy
 nterms = 1                        # Number of taylor terms
 gridder = 'wproject'
 deconvolver = 'multiscale'
-calmode = ['','p','ap','']                # '' to skip solving (will also exclude mask for this loop), 'p' for phase-only and 'ap' for amplitude and phase
-solint = ['','1min','10min','']
 scales = [0,5,10,15]
 usermask = ''
 uvrange = ''                      # uv range cutoff for gaincal
 flag = True                       # Flag residual column after selfcal?
 gaintype = 'G'                    # Use 'T' for polarisation on linear feeds (e.g. MeerKAT)
-discard_nloops = 0                # Discard this many selfcal solutions (e.g. from quick and dirty image) during subsequent loops (only considers when calmode !='')
+discard_nloops = 0                # Discard this many selfcal solutions (e.g. from quick and dirty image) during subsequent loops (only considers when derive_cal != '')
 outlier_threshold = 0.0           # S/N values if >= 1.0, otherwise Jy
 outlier_radius = 0.0              # Radius in degrees for identifying outliers in RACS
 atrous_do = True

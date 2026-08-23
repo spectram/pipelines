@@ -72,7 +72,13 @@ SPW_PREFIX = '*:'
 #Set global values for field, crosscal and SLURM arguments copied to config file, and some of their default values
 FIELDS_CONFIG_KEYS = ['fluxfield','bpassfield','phasecalfield','targetfields','extrafields']
 CROSSCAL_CONFIG_KEYS = ['minbaselines','chanbin','width','timeavg','createmms','keepmms','spw','nspw','calcrefant','refant','standard','badants','badfreqranges']
-SELFCAL_CONFIG_KEYS = ['nloops','loop','cell','robust','imsize','wprojplanes','niter','threshold','uvrange','nterms','gridder','deconvolver','solint','calmode','discard_nloops','gaintype','outlier_threshold','flag','outlier_radius', 'atrous_do','flag_maxsize_bm','scales','usermask']
+#Phase 2 (Pawsey refactor): 'nloops'/'niter'/'threshold'/'calmode'/'solint' -- the keys that
+#actually vary per self-cal loop -- were replaced by a single 'stages' list (one dict per
+#loop, 'nloops' derived as len(stages)-1); see selfcal_stages.py and REFACTOR_PLAN.md's
+#Phase 2 write-up. Every other key here stays a plain, non-broadcast scalar (or list, e.g.
+#imsize=[6144,6144]) -- bookkeeping.get_selfcal_params() no longer replicates any of them
+#to an 'nloops'+1-long list.
+SELFCAL_CONFIG_KEYS = ['stages','loop','cell','robust','imsize','wprojplanes','uvrange','nterms','gridder','deconvolver','discard_nloops','gaintype','outlier_threshold','flag','outlier_radius', 'atrous_do','flag_maxsize_bm','scales','usermask']
 IMAGING_CONFIG_KEYS = ['cell', 'robust', 'imsize', 'wprojplanes', 'niter', 'threshold', 'multiscale', 'nterms', 'gridder', 'deconvolver', 'specmode', 'uvtaper', 'restfreq', 'fitspw', 'fitorder', 'restoringbeam', 'stokes', 'mask', 'rmsmap','outlierfile', 'pbthreshold', 'pbband','imspw']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
@@ -748,7 +754,10 @@ def expand_selfcal_loop_scripts(scripts,config,handle_run_sofia=False):
         return scripts
 
     start_loop = config_parser.get_key(config, 'selfcal', 'loop')
-    selfcal_loops = config_parser.get_key(config, 'selfcal', 'nloops') - start_loop
+    #'nloops' is derived from the 'stages' list's length (Phase 2 of the Pawsey refactor --
+    #see selfcal_stages.py), not read as its own config key any more.
+    nloops = len(config_parser.get_key(config, 'selfcal', 'stages')) - 1
+    selfcal_loops = nloops - start_loop
     part1_idx = next(i for i,s in enumerate(scripts) if has_role(s,'selfcal_part1'))
     part2_idx = next(i for i,s in enumerate(scripts) if has_role(s,'selfcal_part2'))
 

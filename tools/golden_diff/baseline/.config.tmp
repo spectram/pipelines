@@ -47,19 +47,15 @@ badfreqranges = [ '933~960MHz',
 	'1524~1630MHz']
 
 [selfcal]
-nloops = 3
+stages = [{'mask': None, 'apply_cal': None, 'derive_cal': '', 'niter': 10000, 'threshold': '0.5mJy'}, {'mask': 'prev', 'apply_cal': None, 'derive_cal': 'p', 'niter': 50000, 'threshold': 10, 'solint': '1min'}, {'mask': 'prev', 'apply_cal': 'prev', 'derive_cal': 'ap', 'niter': 80000, 'threshold': 5, 'solint': '10min'}, {'mask': 'prev', 'apply_cal': 'prev', 'derive_cal': '', 'niter': 1000000, 'threshold': 3}]
 loop = 0
 cell = '1.5arcsec'
 robust = -0.5
 imsize = [6144, 6144]
 wprojplanes = 512
-niter = [10000, 50000, 80000, 1000000]
-threshold = ['0.5mJy', 10, 5, 3]
 nterms = 1
 gridder = 'wproject'
 deconvolver = 'multiscale'
-calmode = ['','p','ap','']
-solint = ['','1min','10min','']
 scales = [0,5,10,15]
 usermask = ''
 uvrange = ''
