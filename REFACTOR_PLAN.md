@@ -25,6 +25,10 @@ a062602 Fix selfcal_part1 crash: clean up stale per-loop products before retryin
 fe57425 Phase 1 (4d/5): migrate format_args()'s dopol-forcing check to script_registry
 ca9e44f Phase 1 (4e/5): migrate format_args()'s includes_partition check to script_registry
 9f026f7 Phase 1 (5/5): migrate default_config()'s remove_scripts hack to script_registry
+913d80c Phase 2 (1/4): add selfcal_stages.py (Stage dataclass + stage-list resolution)
+a6c182a Phase 2 (2/4): cut [selfcal] config over to the 'stages' list
+e7e7607 Phase 2 (3/4): selfcal_part1.py -- thin mechanical update for the stage list
+55588c7 Phase 2 (4/4): selfcal_part2.py -- thin mechanical update for the stage list
 ```
 
 (4a–5 above were landed by an unattended cloud agent session; it hit its account's usage-session
@@ -52,11 +56,108 @@ normalizes the absolute path immediately preceding `/processMeerKAT` to a fixed 
 comparing, on both sides. Worth knowing about if you ever see the harness disagree with itself between two
 checkouts of the identical commit.
 
-**Next step**: Phase 2 (the self-calibration stage-list restructuring) is next in sequence — see its full
-write-up below. There's a stray git worktree at `.claude/worktrees/agent-a52e6fc8f4994bd7e/` (branch
-`pawsey-refactor`, currently in sync with `origin/pawsey-refactor`) left over from the cloud agent session
-above; safe to `git worktree remove` once you've confirmed nothing else needs it, or reuse it if resuming
-that same agent.
+There's a stray git worktree at `.claude/worktrees/agent-a52e6fc8f4994bd7e/` (branch `pawsey-refactor`,
+currently in sync with `origin/pawsey-refactor`) left over from the cloud agent session above; safe to
+`git worktree remove` once you've confirmed nothing else needs it, or reuse it if resuming that same agent.
+
+**Done: Phase 2's stage-list restructuring is implemented and code-complete** (`913d80c`, `a6c182a`,
+`e7e7607`, `55588c7`), following the design in the "Phase 2" section below with one clarification (see
+"Correction (2026-08-23)" below). **It is NOT yet run on real CASA/Setonix and must not be trusted in
+production until it is** — see the verification breakdown right after this paragraph for exactly what was
+and wasn't checked, and why. This was done under a hard constraint: no Setonix/CASA/Singularity access this
+session, and `selfcal_part1.py`/`selfcal_part2.py` `from casatasks import *` at module level, so those two
+files could not even be *imported* here, let alone executed — verification of them was necessarily limited
+to `ast.parse()` (syntax only) and manual review.
+
+What shipped:
+- New `processMeerKAT/selfcal_stages.py` (zero CASA imports, fully unit-testable with plain `python3`): a
+  frozen `Stage` dataclass (`mask`/`apply_cal`/`derive_cal`/`niter`/`threshold`/`solint`) plus
+  `parse_stages()` (validates a raw `[selfcal] stages` config value, including that stage 0 can't reference
+  `'prev'`), `nloops()` (`len(stages)-1`), `resolve_mask()`, and `should_apply_prev_cal()`.
+- `[selfcal]`'s `nloops`/`niter`/`threshold`/`calmode`/`solint` keys replaced by one `stages` list in both
+  `default_config.txt` and `tools/golden_diff/fixture_config.txt`; `SELFCAL_CONFIG_KEYS` and
+  `expand_selfcal_loop_scripts()` (nloops now derived from `len(stages)-1`) updated to match.
+- `bookkeeping.get_selfcal_params()`: the `single_args`/`gaincal_args`/`list_args` broadcast-to-`nloops+1`
+  machinery (previously lines 131–176) deleted outright; now parses `stages` via
+  `selfcal_stages.parse_stages()` and leaves every other `[selfcal]` key as the plain scalar/list the user
+  configured (no more implicit replication, no more length validation to get wrong).
+- `bookkeeping.get_selfcal_args()`: takes `stages` instead of separate `nloops`/`calmode`/`threshold`;
+  resolves pixmask via `selfcal_stages.resolve_mask()` instead of the loop-1/loop calmode-inferred blanking
+  condition; the "missing caltable" check reads `stages[i].derive_cal` instead of `calmode[i]`.
+- `selfcal_part1.py`/`selfcal_part2.py`: thin, mechanical changes only, per the task's design — every
+  `<param>[loop]` becomes the direct unindexed scalar (none of `imsize`/`cell`/`robust`/`wprojplanes`/
+  `deconvolver`/`gridder`/`nterms`/`scales`/`gaintype`/`uvrange` actually varied per loop in any shipped
+  config), `niter`/`threshold`/`calmode`/`solint` come from the resolved `Stage`, and the
+  `calmode[loop-1] != ''` gate on applying the previous loop's cal becomes
+  `selfcal_stages.should_apply_prev_cal()`. The `tclean()`/`gaincal()`/`applycal()`/`flagdata()` calls
+  themselves, the `calcpsf=True` fix, and the pre-tclean stale-product cleanup are untouched.
+
+**Correction (2026-08-23, while implementing)**: the Phase 2 write-up below doesn't explicitly say what
+happens to keys that don't vary per loop in the shipped default (`imsize`, `cell`, `robust`, `wprojplanes`,
+`deconvolver`, `nterms`, `gaintype`, `uvrange`, `flag`) beyond naming `gridder`/`wprojplanes`/`uvrange`/
+`scales`/`gaintype` as examples that "stay as single top-level `[selfcal]` scalars, unchanged." Implemented
+that literally for every key not present in the `stages` dict example (`mask`/`apply_cal`/`derive_cal`/
+`niter`/`threshold`/`solint`): they're used directly as configured, with the old broadcast-to-`nloops+1`
+machinery removed rather than kept for them. This does drop the pre-existing (if never actually exercised by
+the shipped default) flexibility to give per-loop-varying `imsize`/`scales`/etc. via a full `nloops+1`-long
+list of lists — anyone who actually wants that today would need to re-add it deliberately. Also: `flag`
+(residual-flagging toggle after applying a previous cal) isn't in the `stages` dict example either, and the
+shipped default is a single scalar `True`, so it stayed a top-level scalar too, applied whenever
+`should_apply_prev_cal()` is true (this was already always `True` in every shipped config regardless of
+loop, so behaviour is unchanged for the default; a config that varied `flag` per loop would need updating).
+
+**Verification breakdown — read this before trusting any of Phase 2 in production**:
+- **Fully unit-tested, no CASA needed** (`selfcal_stages.py` has zero CASA imports, and
+  `bookkeeping.get_selfcal_params()` has none at module level either — only `get_selfcal_args()` does, via a
+  local `from casatools import msmetadata,quanta`): `selfcal_stages.parse_stages()`/`nloops()`/
+  `resolve_mask()`/`should_apply_prev_cal()` against the shipped 4-stage HI default (mask/apply_cal
+  resolution at every loop), all six validation-error paths, and that extending the chain by appending a
+  5th stage needs no other edits. Separately, `bookkeeping.get_selfcal_params()` was called directly (via
+  `PYTHONPATH`, a temp config file, no CASA) against both a valid new-schema `[selfcal]` section (confirms
+  `stages` resolves to the expected `Stage` list end-to-end through real config-file parsing, not a mock)
+  and an invalid one (confirms it `sys.exit(1)`s with a logged error rather than crashing with a raw
+  traceback).
+- **Verified via `tools/golden_diff.sh`**: ran green before any Phase 2 change; after the config-schema
+  cutover commit (`a6c182a`) it showed exactly one diff (the fixture config's own `[selfcal]` text, the
+  intended schema change) with the *generated* sbatch/master scripts byte-identical — confirming
+  `expand_selfcal_loop_scripts()`'s new `len(stages)-1` derivation reproduces the same 3-loop
+  `selfcal_part1`/`selfcal_part2` replication as the old `nloops=3` key, and that `SELFCAL_CONFIG_KEYS`
+  exactly matches the new fixture (no "unknown key"/"missing key" warnings in `-R`'s output). Baseline
+  updated (`--update-baseline`) since the diff was intentional. Re-ran green (no diff) after the
+  `selfcal_part1.py`/`selfcal_part2.py` commits too, as expected since neither file is ever imported by
+  `processMeerKAT.py`'s job-generation path — this harness does not and cannot cover those two files at all.
+- **NOT verified — needs a real Setonix/CASA run before trusting in production**:
+  `bookkeeping.get_selfcal_args()` itself (the `from casatools import msmetadata,quanta` function body:
+  pixmask/rmsfile/threshold resolution, the outlier-file/sky-model logic, the usermask-import branch) and
+  everything in `selfcal_part1.py`/`selfcal_part2.py` (the actual `tclean()`/`gaincal()`/`applycal()`/
+  `flagdata()`/PyBDSF calls, and whether the resolved `Stage` values reach them correctly at runtime). These
+  got `ast.parse()` (syntax-check only) plus careful manual reading and cross-checking against the original
+  logic, and three targeted programmatic checks that don't require CASA: (1) `selfcal_part1()`'s full
+  parameter set exactly equals `SELFCAL_CONFIG_KEYS + {vis,refant,dopol}` (what
+  `bookkeeping.get_selfcal_params()` actually produces) via an `ast`-based comparison script, not eyeballing;
+  (2) the same for `selfcal_part2()`; (3) `find_outliers()`'s parameters minus `'step'` exactly equal
+  `mask_image()`'s parameters minus `{outlier_base,outlier_image}` exactly equal that same expected set —
+  load-bearing because `find_outliers()` does `local = locals(); local.pop('step')` then
+  `mask_image(**local, ...)`, so a name mismatch there would silently break at runtime, not at import time.
+  None of this substitutes for actually running `tclean`/`gaincal` against a real MS. **The next session with
+  Setonix access should run the full 4-stage HI default against
+  `/scratch/pawsey1164/ssankar/pipe_test/1738276790.ms` (per this doc's own "Verification" section) and
+  confirm it reaches loop 3 (`_im_3`) exactly as `HI-pawsey`'s already-validated run did, before this branch's
+  selfcal path is trusted over `HI-pawsey`'s.**
+
+**Pre-existing bug found while reading `selfcal_part2.py`, not fixed (out of Phase 2's scope)**: `pybdsf()`
+(a module-level function, not nested in `find_outliers()`) references a bare `loop` name that is not one of
+its own parameters and is not a module global defined anywhere at import time. It only happens to resolve
+today because this script is always invoked as `__main__` (`python3 selfcal_part2.py ...`), where the
+`if __name__ == '__main__':` block's `loop = params['loop']` assignment lands in the same module-global
+namespace `pybdsf()` reads from at call time. If `pybdsf()` were ever called from a context that imports
+`selfcal_part2` as a module without that `__main__` block having run first (e.g. a future test, or a
+different entry point), it would raise `NameError: name 'loop' is not defined`. Worth fixing whenever
+`selfcal_part2.py` is next touched, but unrelated to the stage-list restructuring so left alone here.
+
+**Next step**: Phase 2's code is done but unverified beyond what's listed above — get a real Setonix run in
+before moving on, or at minimum flag this prominently to whoever does. After that, Phase 3 (cluster-hardware
+config) is next in sequence per the write-up below.
 
 **`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
 as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
