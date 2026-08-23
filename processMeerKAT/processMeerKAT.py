@@ -76,11 +76,26 @@ IMAGING_CONFIG_KEYS = ['cell', 'robust', 'imsize', 'wprojplanes', 'niter', 'thre
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
 CONTAINER = '/software/projects/pawsey1164/ssankar/containers/idianext.sif'
+SOFIA_CONTAINER = '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'
 
 #Container-specific Python interpreter overrides: some containers (e.g. idianext.sif) install
 #casatasks/casatools into a venv that isn't on PATH by default via `singularity exec`.
 CONTAINER_PYTHON = {
     CONTAINER: '/opt/venv/bin/python3',
+}
+
+#Container-specific overrides for the [slurm] modules list (normally the same
+#singularity/4.1.0-mpi module for every script). SOFIA_CONTAINER was built for Ilifu (Ubuntu
+#22.04); Setonix's "-mpi" module flavour bind-mounts Cray fabric/Lustre host libraries
+#(libcxi, liblustreapi, etc.) built against the host's newer glibc (2.38) for MPI-enabled
+#jobs, which the container's own older glibc can't satisfy -- this breaks *every* dynamically
+#linked binary in the container, not just casampi/MPI-related ones (confirmed: even `echo`
+#and `python3` failed with GLIBC_2.38 "not found" errors). SoFiA is single-node/non-MPI and
+#doesn't need those host libraries at all -- "-nohost" (no host-library injection) avoids
+#pulling them in and the container runs cleanly. Confirmed via a standalone test job: SoFiA
+#ran successfully on a real continuum image (333 sources found, reliability ~1.0).
+CONTAINER_MODULES = {
+    SOFIA_CONTAINER: ['singularity/4.1.0-nohost'],
 }
 
 #idianext.sif's venv Python is linked against a spack-built OpenSSL newer than the container's
@@ -162,7 +177,7 @@ CONTAINER_PREPEND_ENV = {
 MPI_WRAPPER = 'srun'
 PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts run before calibration at top level directory when nspw > 1
 POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''), \
-('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', True, '')] #Scripts run after calibration at top level directory when nspw > 1
+('run_sofia.py', False, SOFIA_CONTAINER), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', True, '')] #Scripts run after calibration at top level directory when nspw > 1
 SCRIPTS = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
@@ -650,6 +665,9 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         params['command'] = 'ulimit -n 16384\n' + params['command']
         params['partition'] = 'long'
 
+    #Some containers need a different singularity module than the configured default (e.g.
+    #SOFIA_CONTAINER needs "-nohost" instead of "-mpi" -- see CONTAINER_MODULES above).
+    modules = CONTAINER_MODULES.get(container, modules)
     params['modules'] = ''
     if len(modules) > 0:
         for module in modules:
