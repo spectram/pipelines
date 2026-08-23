@@ -56,7 +56,12 @@ rmdir "$RUN_DIR/logs" 2>/dev/null || true
 # absolute paths (e.g. the container path) are untouched since they don't end in
 # '/processMeerKAT'.
 normalize_repo_root() {
-    grep -rlZ . "$1" 2>/dev/null | xargs -0 -r sed -i -E 's#[^[:space:]]*/processMeerKAT#__REPO_ROOT__/processMeerKAT#g'
+    # Excludes ':' and '=' too, not just whitespace: PYTHONPATH-style --env values pack
+    # multiple colon-separated paths into one whitespace-delimited token (e.g. `--env
+    # PYTHONPATH=/foo/idianext_mpi4py:/bar/processMeerKAT`) -- matching only up to the
+    # nearest ':'/'=' keeps the unrelated preceding path (and the PYTHONPATH= key itself)
+    # intact instead of swallowing them into the replacement.
+    grep -rlZ . "$1" 2>/dev/null | xargs -0 -r sed -i -E 's#[^[:space:]:=]*/processMeerKAT#__REPO_ROOT__/processMeerKAT#g'
 }
 
 if [[ "${1:-}" == "--update-baseline" ]]; then
