@@ -417,5 +417,12 @@ def main():
 
     msmd.done()
 
+    #Write listobs alongside the config (same basename, so multiple config/MS pairs built
+    #in the same directory don't clobber each other's listobs), so users get a
+    #human-readable scan/field/spw summary of the MS for free with every '-B' run.
+    listfile = '{0}.listobs.txt'.format(os.path.splitext(args.config)[0])
+    listobs(vis=args.MS, listfile=listfile, overwrite=True)
+    logger.info('Observation summary written to "{0}".'.format(listfile))
+
 if __name__ == "__main__":
     main()
