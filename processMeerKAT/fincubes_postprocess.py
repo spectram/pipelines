@@ -3,14 +3,22 @@
 
 """Post-processing for the [hi_image] fincubes export -- collapses a cube's per-plane
 restoring beams (CASA's CASAMBM convention) to a single common beam (the median across
-planes) in the header, and converts the spectral axis from frequency to optical velocity
-centred on the cube's middle channel. This is the "data processing" step
-image_engine.finalize_stage()'s/the SoFiA final-pass templates' docstrings previously noted
-as deferred during Phase 6 -- see REFACTOR_PLAN.md.
+planes) in the header, estimates SoFiA S+C spatial kernel sizes from that beam, and converts
+the spectral axis from frequency to optical velocity centred on the cube's middle channel.
+This is the "data processing" step image_engine.finalize_stage()'s/the SoFiA final-pass
+template's docstrings previously noted as deferred during Phase 6 -- see REFACTOR_PLAN.md.
 
-Runs on the CASA side (hi_image.py, right after finalize_stage()'s export), since it needs
-astropy (already used elsewhere in that container, e.g. selfcal_part2.py) -- no CASA import
-here itself, kept independent/unit-testable with plain FITS files.
+The three steps are deliberately split across two containers/scripts, not run together:
+`add_median_beam()` runs first, in `hi_image.py` (CASA side, right after
+`finalize_stage()`'s export) -- the final SoFiA pass must only run *after* this, both because
+`estimate_spatial_kernels()` needs the collapsed BMAJ to be well-defined, and because SoFiA
+itself is given the PB cube as `input.gain`. `estimate_spatial_kernels()` and
+`freq_to_optical_velocity()` then run in `hi_sofia.py` (SoFiA container -- astropy is
+available there too, confirmed), the kernel estimate feeding that same final SoFiA call's
+`scfind.kernelsXY` override and the velocity conversion running only *after* SoFiA completes
+(SoFiA itself still sees a frequency axis).
+
+No CASA import in this module itself -- kept independent/unit-testable with plain FITS files.
 
 Not wired to continuum imaging ([cont_image]/science_image.py): mfs continuum images are
 single-plane (no per-channel BEAMS table to median, no meaningful spectral axis to convert),
@@ -119,18 +127,33 @@ def freq_to_optical_velocity(fitsfile, restfreq=None):
         center_pix, v_center / 1e3, fitsfile))
 
 
-def postprocess(fitsfile, restfreq=None):
+def estimate_spatial_kernels(fitsfile):
 
-    """Run both fincubes post-processing steps, in order, on 'fitsfile': median common beam
-    first (so the spectral-axis rewrite below operates on the already-simplified,
-    single-HDU file), then the frequency -> optical velocity conversion.
+    """Estimate SoFiA S+C finder spatial smoothing kernel sizes (`scfind.kernelsXY`), in
+    pixels, from the beam size relative to the pixel scale: no smoothing, half the beam
+    width, and the full beam width. Must be called *after* `add_median_beam()` has collapsed
+    the header to a single common BMAJ -- the whole point of running the final SoFiA pass
+    only after the beam step (see `hi_sofia.py`) is so this estimate is well-defined.
 
     Arguments:
     ----------
     fitsfile : str
-        Path to the FITS cube (mutated in place).
-    restfreq : float, optional
-        Rest frequency in Hz, passed through to `freq_to_optical_velocity()`."""
+        Path to the FITS cube (already beam-collapsed).
 
-    add_median_beam(fitsfile)
-    freq_to_optical_velocity(fitsfile, restfreq=restfreq)
+    Returns:
+    --------
+    kernels : str
+        Comma-separated kernel sizes in SoFiA's own list format, e.g. '0, 4, 8.2', ready to
+        pass as a `scfind.kernelsXY` override."""
+
+    with fits.open(fitsfile) as hdu:
+        hdr = hdu[0].header
+        cdelt1 = abs(hdr['CDELT1'])
+        bmaj = hdr['BMAJ']
+
+    beam_pix = bmaj / cdelt1
+    kernels = [0, int(np.floor(beam_pix / 2)), round(beam_pix, 2)]
+    logger.info("Estimated S+C spatial kernels from BMAJ={0:.6f} deg / |CDELT1|={1:.6f} deg/pix = {2:.2f} pix: {3}.".format(
+        bmaj, cdelt1, beam_pix, kernels))
+
+    return ', '.join(str(k) for k in kernels)
