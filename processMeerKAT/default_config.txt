@@ -89,7 +89,7 @@ wprojplanes = 512
 nterms = 1                        # Number of taylor terms
 gridder = 'wproject'
 deconvolver = 'multiscale'
-scales = [0,5,10,15]
+scales = [0,5,10]
 usermask = ''
 uvrange = ''                      # uv range cutoff for gaincal
 flag = True                       # Flag residual column after selfcal?
@@ -115,7 +115,7 @@ cell = '2arcsec'
 imsize = [2048, 2048]
 robust = 0.0
 uvtaper = ''
-scales = [0, 5, 10, 15]
+scales = [0, 5, 10]
 gridder = 'wproject'
 wprojplanes = 128
 deconvolver = 'multiscale'
@@ -126,7 +126,7 @@ restfreq = '1420.406MHz'          # HI line (change for other emission lines - e
 restoringbeam = ''
 stokes = 'I'
 rebin = False                     # Rebin the final stage's image before export?
-rebin_factor = [2, 2, 1]          # imrebin() factor, only used when rebin=True
+rebin_factor = [2, 2]          # imrebin() factor, only used when rebin=True
 pb_correct = False                # Apply katbeam PB-correction to the final stage's image before export?
 pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
 pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"
