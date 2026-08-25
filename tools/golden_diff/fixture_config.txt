@@ -97,9 +97,6 @@ weighting = 'briggs'
 nterms = 2
 specmode = 'mfs'
 restfreq = '1420.406MHz'
-fitspw = ''
-imspw = ''
-fitorder = 1
 restoringbeam = ''
 stokes = 'I'
 rebin = False
@@ -110,6 +107,10 @@ pbband = 'LBand'
 outlierfile = ''
 combo = 0
 stage = 0
+
+[contsub]
+fitspw = ''
+fitorder = 1
 
 [hi_image]
 hi_combos = [{'robust': 1.0, 'uvtaper': ''}]

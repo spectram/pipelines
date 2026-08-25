@@ -93,14 +93,14 @@ SELFCAL_CONFIG_KEYS = ['stages','loop','cell','robust','imsize','wprojplanes','u
 #Phase 6 (Pawsey refactor): '[image]' renamed '[cont_image]' and given the same
 #'stages'-list shape as '[hi_image]' (replacing the old flat 'niter'/'threshold'/'mask'
 #scalars) -- see image_stages.py and REFACTOR_PLAN.md's Phase 6 write-up.
-CONT_IMAGE_CONFIG_KEYS = ['vis','stages','cell','imsize','robust','uvtaper','scales','gridder','wprojplanes','deconvolver','weighting','nterms','specmode','restfreq','fitspw','fitorder','imspw','restoringbeam','stokes','rebin','rebin_factor','pb_correct','pbthreshold','pbband','outlierfile','combo','stage']
+CONT_IMAGE_CONFIG_KEYS = ['vis','stages','cell','imsize','robust','uvtaper','scales','gridder','wprojplanes','deconvolver','weighting','nterms','specmode','restfreq','restoringbeam','stokes','rebin','rebin_factor','pb_correct','pbthreshold','pbband','outlierfile','combo','stage']
 #New in Phase 6: HI cube imaging, images '[run] hi_contsub_vis' (uvcontsub.py's output) via
 #a 'stages' list (image_stages.py) crossed with 'hi_combos' (one entry per robust/uvtaper
 #weighting combination to image, each getting the full stage chain independently -- see
 #REFACTOR_PLAN.md's Phase 6 addendum). 'restfreq'/'imspw' are '[hi_image]''s own keys (not
 #read from '[cont_image]') so a '-H'-only run's imaging behaviour never depends on
-#'[cont_image]''s contents -- only uvcontsub.py's 'fitspw'/'fitorder' still come from
-#'[cont_image]' (uvcontsub is shared by '-H' and standalone '--contsub', not HI-specific).
+#'[cont_image]''s contents at all -- uvcontsub.py's 'fitspw'/'fitorder' live in their own
+#'[contsub]' section (shared by '-H' and standalone '--contsub', not HI-specific).
 HI_IMAGE_CONFIG_KEYS = ['hi_combos','stages','cell','imsize','scales','gridder','wprojplanes','deconvolver','weighting','restfreq','imspw','rebin','rebin_factor','pb_correct','pbthreshold','pbband','combo','stage']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
@@ -1465,14 +1465,12 @@ def default_config(arg_dict):
             config_parser.remove_section(filename, 'selfcal')
             remove_roles |= {'selfcal_part1', 'selfcal_part2'}
         if not arg_dict['science_image']:
-            #Don't remove '[cont_image]' itself here even though -I is off: uvcontsub.py
-            #(-H/--contsub) still reuses '[cont_image]' fitspw/fitorder regardless of
-            #whether continuum imaging itself is wanted (hi_image.py no longer does --
-            #'[hi_image]' has its own restfreq/imspw) -- only drop the section once
-            #nothing needs it at all (below).
-            remove_roles |= {'science_image', 'cont_sofia'}
-        if not arg_dict['science_image'] and not arg_dict['hi_image'] and not want_contsub:
+            #'[cont_image]' is now purely continuum-imaging-specific (uvcontsub.py's
+            #fitspw/fitorder moved to their own '[contsub]' section below, and
+            #hi_image.py has its own restfreq/imspw), so it's safe to drop it outright
+            #whenever -I is off -- no more special-casing for -H/--contsub.
             config_parser.remove_section(filename, 'cont_image')
+            remove_roles |= {'science_image', 'cont_sofia'}
         if not arg_dict['hi_image']:
             #-I and -H are independent (both can run together -- continuum self-cal
             #imaging + separate HI cube imaging in one pass), so this doesn't touch the
@@ -1486,6 +1484,7 @@ def default_config(arg_dict):
             #contsub'd data if it happened to run afterward in postcal_scripts. Now gated
             #explicitly, and uvcontsub.py no longer touches [data] vis at all (writes
             #[run] hi_contsub_vis instead) -- see bookkeeping.get_hi_contsub_vis().
+            config_parser.remove_section(filename, 'contsub')
             remove_roles |= {'uvsub', 'uvcontsub'}
 
         scripts = [s for s in arg_dict['postcal_scripts']

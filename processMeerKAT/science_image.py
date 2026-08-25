@@ -58,7 +58,6 @@ def main(args, taskvals):
     nterms = va(taskvals, 'cont_image', 'nterms', int)
     specmode = va(taskvals, 'cont_image', 'specmode', str)
     restfreq = va(taskvals, 'cont_image', 'restfreq', str)
-    imspw = va(taskvals, 'cont_image', 'imspw', str)
     restoringbeam = va(taskvals, 'cont_image', 'restoringbeam', str)
     stokes = va(taskvals, 'cont_image', 'stokes', str)
     outlierfile = va(taskvals, 'cont_image', 'outlierfile', str)
@@ -78,7 +77,7 @@ def main(args, taskvals):
         niter=stages[stage].niter, threshold=stages[stage].threshold,
         imsize=imsize, cell=cell, robust=robust, uvtaper=uvtaper, scales=scales,
         gridder=gridder, wprojplanes=wprojplanes, deconvolver=deconvolver,
-        weighting=weighting, specmode=specmode, restfreq=restfreq, spw=imspw,
+        weighting=weighting, specmode=specmode, restfreq=restfreq, spw='',
         nterms=nterms, stokes=stokes, restoringbeam=restoringbeam, outlierfile=outlierfile)
 
     if image_stages.is_final(stages, stage):

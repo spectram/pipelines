@@ -123,9 +123,6 @@ weighting = 'briggs'
 nterms = 2                        # Number of taylor terms (use deconvolver='mtmfs' for a true multi-term continuum fit)
 specmode = 'mfs'                  # 'mfs' or 'mtmfs' for continuum -- HI cube imaging is the separate [hi_image] pipeline
 restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH) -- [hi_image] has its own separate 'restfreq', not read from here
-fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub -- also used by uvcontsub.py for -H/--contsub, independent of continuum imaging itself
-imspw = ''                        # SPW to select for imaging -- [hi_image] has its own separate 'imspw', not read from here
-fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub -- also used by uvcontsub.py for -H/--contsub, independent of continuum imaging itself
 restoringbeam = ''
 stokes = 'I'
 rebin = False                     # Rebin the final stage's image before export?
@@ -136,6 +133,10 @@ pbband = 'LBand'                  # Which band to use to generate the PB - one o
 outlierfile = ''
 combo = 0                         # Internal: unused for [cont_image] (no combo axis, unlike [hi_image]) -- reserved for consistency
 stage = 0                         # Internal: current stage index in 'stages', advanced by cont_sofia.py
+
+[contsub]                         # uvcontsub.py's continuum-fit parameters -- shared by -H and standalone --contsub, independent of whether continuum imaging ([cont_image]) itself runs
+fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub
+fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub
 
 [hi_image]                        # HI (spectral-line) cube imaging -- Phase 6 of the Pawsey refactor (see REFACTOR_PLAN.md). Images [run] hi_contsub_vis (uvcontsub.py's output, gated on -H/--contsub), not [data] vis.
 # Weighting combinations to image, one dict per combination -- the *entire* stage chain
