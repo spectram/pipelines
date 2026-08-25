@@ -159,19 +159,51 @@ different entry point), it would raise `NameError: name 'loop' is not defined`. 
 before moving on, or at minimum flag this prominently to whoever does. After that, Phase 3 (cluster-hardware
 config) is next in sequence per the write-up below.
 
+**In progress (2026-08-25): reduced-scale real-CASA smoke test of Phase 2**, as a cheap first step before
+committing to the full production-scale 4-stage run this section calls for. Isolated test dir
+`/scratch/pawsey1164/ssankar/pipe_test_refactor/` (a copy of `pipe_test/`'s already-split
+`1738276790.1410~1420.0MHz.NGC4064.mms`, so `HI-pawsey`'s completed reference outputs in `pipe_test/` aren't
+touched), config trimmed to just `selfcal_part1.py`/`selfcal_part2.py` (skips crosscal — reuses the
+already-calibrated split MMS directly) against a **3-stage** `stages` list (dirty → phase-only selfcal →
+apply-and-deepen; skips the amp+phase loop) at a much smaller `imsize=[800,800]`/`wprojplanes=64` and
+correspondingly small `niter`/`threshold` than the validated production settings
+(`imsize=[6144,6144]`/`wprojplanes=512`). Exercises `parse_stages()`/`resolve_mask()`/
+`should_apply_prev_cal()`/`get_selfcal_args()` (including the `apply_cal='prev'` + residual-flagging path,
+via loop 2) against real CASA quickly, but is **not** a substitute for the full production-scale validation
+run — doesn't confirm loop 3's `niter=1000000` deep clean behaves, doesn't reuse the real 4-stage default,
+and a much smaller image/wproject count could mask issues that only show up at production scale (e.g.
+memory pressure, wproject plane count interactions). Found one genuine subtlety while setting this up,
+unrelated to Phase 2 itself: `expand_selfcal_loop_scripts()` (`processMeerKAT.py`) only appends the final
+loop's `selfcal_part2.sbatch` when `run_sofia.py` immediately follows the selfcal pair in `[slurm] scripts`;
+a scripts list ending in bare `selfcal_part1.py`/`selfcal_part2.py` (no trailing `run_sofia.py`) silently
+drops the last loop's `part2` (no gaincal, no mask) — confirmed pre-existing behaviour via the golden-diff
+baseline, not a Phase 2 regression, but worth fixing or at least documenting prominently if
+`run_sofia.py`-less scripts lists are ever a real configuration (this smoke test's config sidesteps it by
+making the interesting phase-cal loop not the last stage). Jobs submitted as 47572983–47572987; check
+`squeue -u ssankar` / `sacct -j 47572983,47572984,47572985,47572986,47572987` for outcome if picking this up
+after they've finished, and `pipe_test_refactor/logs/` for the CASA logs.
+
 **`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
 as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
 intermediate state where the first fix attempt (`0013ebe`, forcing `calcpsf=True`) turned out *not* to fix
 the crash — that callout is now superseded by the real root cause and fix described right after it
 (leftover stale `imagename.psf`/`.sumwt` files from a previous crashed attempt confusing `tclean`'s
 `restart=True` path regardless of `calcpsf`; fixed by deleting `imagename.*` before every `tclean` call in
-`selfcal_part1.py`). The full 4-stage HI loop has since been run successfully end-to-end on `HI-pawsey`
-through loop 2 (`selfcal_part1`/`selfcal_part2` for both loops 1 and 2); loop 3 (the final deep clean,
-`niter=1000000`) is next and is the one to watch for Phase 7b's 24h-walltime-cap concern, since unlike
-loops 1–2 it isn't expected to stop early on threshold. Phase 2's stage-list restructuring is unaffected
-either way (it was always a readability win independent of the bug); Phase 7b's checkpoint-chaining design
-should still apply the same "always clean up, never assume leftover state is safe to reuse" lesson when
-it's implemented, even though the specific bug that taught it is now fixed.
+`selfcal_part1.py`).
+
+**Update (2026-08-25, on-disk state check)**: the paragraph below (and the "Next step" above it) was written
+assuming loop 3 hadn't run yet. Checking `/scratch/pawsey1164/ssankar/pipe_test/` directly shows `HI-pawsey`'s
+reference run has since gone further than this doc tracked: **the full 4-stage HI loop completed
+end-to-end**, including loop 3 (the `niter=1000000` deep clean) — `1738276790.NGC4064_im_3.image` exists
+(mtime 2026-08-23 13:55), and `run_sofia.py`'s continuum-subtraction masking ran after it
+(`_im_3_cat.txt`/`_mask.fits`/`_rel.eps`, mtime 2026-08-23 14:07). So Phase 7b's 24h-walltime-cap concern for
+loop 3 did not materialize on this MS — worth knowing when Phase 7b is actually designed, though not
+conclusive for a larger MS/longer deep clean. `uvsub.py`/`uvcontsub.py`/`science_image.py` had not produced
+output yet as of this check (only their generated `.sbatch` files exist) — the run had not reached that far,
+or stalled before it; check `squeue`/job logs before assuming it's still progressing. Phase 2's stage-list
+restructuring is unaffected either way (it was always a readability win independent of the bug); Phase 7b's
+checkpoint-chaining design should still apply the same "always clean up, never assume leftover state is safe
+to reuse" lesson when it's implemented, even though the specific bug that taught it is now fixed.
 
 `HI-pawsey` has been pushed to `origin/HI-pawsey` through `543363b` (includes `2077eae` CLAUDE.md, `0013ebe`
 the calcpsf change, and `543363b` the actual fix) — check `git log origin/HI-pawsey..HI-pawsey` if picking
