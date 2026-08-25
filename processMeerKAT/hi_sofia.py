@@ -62,11 +62,13 @@ def main(args, taskvals):
     #'sofia_mask_params'/'sofia_final_params' comment. Dict-valued, so read directly rather
     #than via config_parser.validate_args() (str/int/float/bool only).
     if final:
-        #hi_image.py already collapsed input_fits's per-plane beams to a single common one
-        #(fincubes_postprocess.add_median_beam(), CASA side) before this job could even
-        #start -- that's the whole reason this final pass is gated to run only after that
-        #step: BMAJ is only well-defined once collapsed, and it's what the spatial kernel
-        #estimate below is based on.
+        #hi_image.py already ran fincubes_postprocess.py's full data-processing step (median
+        #common beam, then frequency->optical velocity, CASA side) on input_fits before this
+        #job could even start -- that's the whole reason this final pass is gated to run only
+        #after that step: BMAJ is only well-defined once the per-plane beams are collapsed,
+        #and it's what the spatial kernel estimate below is based on. SoFiA itself therefore
+        #sees the already velocity-converted cube, and the PB cube (also already
+        #beam-collapsed/velocity-converted) is passed through as its gain input.
         overrides = dict(taskvals['hi_image'].get('sofia_final_params', {}))
         overrides['scfind.kernelsXY'] = fincubes_postprocess.estimate_spatial_kernels(input_fits)
         pb_fits = va(taskvals, 'hi_image', 'final_export_pb', str, default='')
@@ -77,14 +79,6 @@ def main(args, taskvals):
     sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, output_dir, mask_basename, overrides=overrides)
 
     if final:
-        #Deferred "data processing" step, part 2 (see fincubes_postprocess.py's module
-        #docstring): frequency -> optical velocity, run only *after* SoFiA has finished with
-        #this pass (SoFiA itself still sees a frequency axis) -- on both the image and (if
-        #produced) the PB cube, matching the median-beam step's earlier CASA-side coverage.
-        fincubes_postprocess.freq_to_optical_velocity(input_fits)
-        if pb_fits != '':
-            fincubes_postprocess.freq_to_optical_velocity(pb_fits)
-
         combo += 1
         stage = 0
     else:

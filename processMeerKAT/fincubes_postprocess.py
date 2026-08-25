@@ -8,15 +8,14 @@ the spectral axis from frequency to optical velocity centred on the cube's middl
 This is the "data processing" step image_engine.finalize_stage()'s/the SoFiA final-pass
 template's docstrings previously noted as deferred during Phase 6 -- see REFACTOR_PLAN.md.
 
-The three steps are deliberately split across two containers/scripts, not run together:
-`add_median_beam()` runs first, in `hi_image.py` (CASA side, right after
-`finalize_stage()`'s export) -- the final SoFiA pass must only run *after* this, both because
-`estimate_spatial_kernels()` needs the collapsed BMAJ to be well-defined, and because SoFiA
-itself is given the PB cube as `input.gain`. `estimate_spatial_kernels()` and
-`freq_to_optical_velocity()` then run in `hi_sofia.py` (SoFiA container -- astropy is
-available there too, confirmed), the kernel estimate feeding that same final SoFiA call's
-`scfind.kernelsXY` override and the velocity conversion running only *after* SoFiA completes
-(SoFiA itself still sees a frequency axis).
+`add_median_beam()` and `freq_to_optical_velocity()` both run in `hi_image.py` (CASA side,
+right after `finalize_stage()`'s export), on both the image and (if produced) the PB cube --
+so the final SoFiA pass (`hi_sofia.py`, SoFiA container) always sees an already
+beam-collapsed, already velocity-converted cube. It's gated to run only after this for two
+reasons: `estimate_spatial_kernels()` (called there, right before the SoFiA call --
+astropy is available in the SoFiA container too, confirmed) needs the collapsed BMAJ to be
+well-defined, and SoFiA itself is given the (also collapsed/converted) PB cube as
+`input.gain`.
 
 No CASA import in this module itself -- kept independent/unit-testable with plain FITS files.
 

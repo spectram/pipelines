@@ -103,16 +103,17 @@ def main(args, taskvals):
         exported, pb_exported = image_engine.finalize_stage(outimage, export_dir, rebin=rebin, rebin_factor=rebin_factor,
             pb_correct=pb_correct, pbthreshold=pbthreshold, pbband=pbband)
 
-        #Deferred "data processing" step, part 1 (see REFACTOR_PLAN.md's Phase 6 write-up and
+        #Deferred "data processing" step (see REFACTOR_PLAN.md's Phase 6 write-up and
         #fincubes_postprocess.py's module docstring): collapse per-plane beams to a single
-        #common (median) beam, on both the image and (if produced) the PB cube. Only this
-        #step happens here -- hi_sofia.py's final SoFiA pass must run after it (S+C spatial
-        #kernels are estimated from the now-collapsed BMAJ, and the PB cube is passed to
-        #SoFiA as input.gain), so the frequency->optical velocity conversion happens there
-        #too, *after* SoFiA runs, not here.
+        #common (median) beam, then convert the spectral axis to optical velocity -- on both
+        #the image and (if produced) the PB cube. Both run here, before hi_sofia.py's final
+        #SoFiA pass (which still needs the beam collapsed first, to estimate its S+C spatial
+        #kernels from BMAJ).
         fincubes_postprocess.add_median_beam(exported)
+        fincubes_postprocess.freq_to_optical_velocity(exported)
         if pb_exported != '':
             fincubes_postprocess.add_median_beam(pb_exported)
+            fincubes_postprocess.freq_to_optical_velocity(pb_exported)
 
         #hi_sofia.py's final pass reads these to know what to source-find on / pass as gain.
         config_parser.overwrite_config(args['config'], conf_dict={'final_export': "'{0}'".format(exported),
