@@ -29,6 +29,18 @@ precal_scripts = []
 postcal_scripts = []
 scripts = [('partition.py', True, ''), ('validate_input.py', False, ''), ('flag_round_1.py', True, ''), ('calc_refant.py', False, ''), ('setjy.py', True, ''), ('xx_yy_solve.py', False, ''), ('xx_yy_apply.py', True, ''), ('flag_round_2.py', True, ''), ('xx_yy_solve.py', False, ''), ('xx_yy_apply.py', True, ''), ('split.py', True, ''), ('quick_tclean.py', True, ''), ('concat.py', False, ''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py', True, ''), ('selfcal_part2.py', False, ''), ('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', True, '')]
 
+[cluster]
+total_nodes_limit = 1592
+cpus_per_node = 128
+mem_per_node_gb = 230
+mem_per_node_gb_highmem = 1508
+mem_per_cpu_mb_shared = 1840
+default_mem_gb = 32
+default_partition = 'work'
+long_partition = 'long'
+highmem_partition = 'HighMem'
+devel_partition = 'Devel'
+
 [crosscal]
 minbaselines = 4
 chanbin = 1

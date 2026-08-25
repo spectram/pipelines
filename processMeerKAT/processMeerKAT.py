@@ -92,6 +92,30 @@ SELFCAL_CONFIG_KEYS = ['stages','loop','cell','robust','imsize','wprojplanes','u
 IMAGING_CONFIG_KEYS = ['cell', 'robust', 'imsize', 'wprojplanes', 'niter', 'threshold', 'multiscale', 'nterms', 'gridder', 'deconvolver', 'specmode', 'uvtaper', 'restfreq', 'fitspw', 'fitorder', 'restoringbeam', 'stokes', 'mask', 'rmsmap','outlierfile', 'pbthreshold', 'pbband','imspw']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
+
+#Phase 3 (Pawsey refactor): cluster hardware facts and named partitions, previously hardcoded
+#module constants and inline 'work'/'long'/'HighMem'/'Devel' string literals scattered through
+#write_sbatch()/write_jobs()/format_args(). Now a '[cluster]' config section (see
+#default_config.txt), read via get_cluster_kwargs() below -- editable per-project rather than
+#requiring a code change if e.g. a different Setonix reservation/partition layout is ever needed.
+#DEFAULT_CLUSTER_KWARGS mirrors default_config.txt's '[cluster]' section and is used verbatim
+#for any config predating this section (get_cluster_kwargs() falls back to it via
+#config_parser.has_section() rather than hard-requiring '[cluster]'), so existing configs built
+#before this change keep working unchanged.
+CLUSTER_CONFIG_STR_KEYS = ['default_partition','long_partition','highmem_partition','devel_partition']
+CLUSTER_CONFIG_KEYS = ['total_nodes_limit','cpus_per_node','mem_per_node_gb','mem_per_node_gb_highmem','mem_per_cpu_mb_shared','default_mem_gb'] + CLUSTER_CONFIG_STR_KEYS
+DEFAULT_CLUSTER_KWARGS = {
+    'total_nodes_limit': TOTAL_NODES_LIMIT,
+    'cpus_per_node': CPUS_PER_NODE_LIMIT,
+    'mem_per_node_gb': MEM_PER_NODE_GB_LIMIT,
+    'mem_per_node_gb_highmem': MEM_PER_NODE_GB_LIMIT_HIGHMEM,
+    'mem_per_cpu_mb_shared': MEM_PER_CPU_MB_SHARED,
+    'default_mem_gb': DEFAULT_MEM_GB,
+    'default_partition': 'work',
+    'long_partition': 'long',
+    'highmem_partition': 'HighMem',
+    'devel_partition': 'Devel',
+}
 CONTAINER = '/software/projects/pawsey1164/ssankar/containers/idianext.sif'
 SOFIA_CONTAINER = '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'
 
@@ -312,7 +336,7 @@ def parse_args():
                             help="Distribute tasks of this block size before moving onto next node [default: 1; max: ntasks-per-node].")
     parser.add_argument("-m","--mem", metavar="num", required=False, type=int, default=DEFAULT_MEM_GB,
                         help="Use this many GB of memory (per node) for threadsafe scripts [default: {0}; max: {1}].".format(DEFAULT_MEM_GB,MEM_PER_NODE_GB_LIMIT))
-    parser.add_argument("-p","--partition", metavar="name", required=False, type=str, default="work", help="SLURM partition to use [default: 'Main'].")
+    parser.add_argument("-p","--partition", metavar="name", required=False, type=str, default=DEFAULT_CLUSTER_KWARGS['default_partition'], help="SLURM partition to use [default: 'Main'].")
     parser.add_argument("-T","--time", metavar="time", required=False, type=str, default="12:00:00", help="Time limit to use for all jobs, in the form d-hh:mm:ss [default: '12:00:00'].")
     parser.add_argument("-S","--scripts", action='append', nargs=3, metavar=('script','threadsafe','container'), required=False, type=parse_scripts, default=SCRIPTS,
                         help="Run pipeline with these scripts, in this order, using these containers (3rd value - empty string to default to [-c --container]). Is it threadsafe (2nd value)?")
@@ -544,7 +568,7 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
 
 
 def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runname='',plane=1,exclude='',mpi_wrapper=MPI_WRAPPER,container=CONTAINER,
-                partition="work",time="12:00:00",casa_script=False,SPWs='',nspw=1,account='',reservation='',modules=[],justrun=False):
+                partition="work",time="12:00:00",casa_script=False,SPWs='',nspw=1,account='',reservation='',modules=[],justrun=False,cluster=None):
 
     """Write a SLURM sbatch file calling a certain script (and args) with a particular configuration.
 
@@ -591,7 +615,13 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     modules : list, optional
         Modules to load upon execution of sbatch script.
     justrun : bool, optionall
-        Just run the pipeline without rebuilding each job script (if it exists)."""
+        Just run the pipeline without rebuilding each job script (if it exists).
+    cluster : dict, optional
+        '[cluster]' config kwargs (see get_cluster_kwargs()) -- cluster hardware facts and named
+        partitions. Defaults to DEFAULT_CLUSTER_KWARGS when not passed (e.g. a standalone call)."""
+
+    if cluster is None:
+        cluster = DEFAULT_CLUSTER_KWARGS
 
     if not os.path.exists(LOG_DIR):
         os.mkdir(LOG_DIR)
@@ -603,13 +633,13 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     #Use multiple CPUs for tclean and partition scripts
     params['cpus'] = 1
     if script_registry.get_properties(script).cpu_intensive:
-        cpus = int(CPUS_PER_NODE_LIMIT/tasks)
+        cpus = int(cluster['cpus_per_node']/tasks)
         params['cpus'] = cpus
-        
+
     #hard-code for 2/4 polarisations
     if script_registry.get_properties(script).is_spw_fanout:
         dopol = config_parser.get_key(TMP_CONFIG, 'run', 'dopol')
-        if dopol and 4*tasks < CPUS_PER_NODE_LIMIT:
+        if dopol and 4*tasks < cluster['cpus_per_node']:
             params['cpus'] = 4
         elif not dopol and params['cpus'] > 2:
             params['cpus'] = 2
@@ -627,7 +657,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     if script_registry.get_properties(script).exclusive_node:
         params['exclusive'] = '\n#SBATCH --exclusive'
         #Setonix's --exclusive admission control additionally requires ntasks-per-node to evenly
-        #partition the node's physical cores (128, i.e. CPUS_PER_NODE_LIMIT) --
+        #partition the node's physical cores (cluster['cpus_per_node']) --
         #confirmed empirically: --ntasks-per-node=9 (this pipeline's scan-count-driven default,
         #irrelevant to core topology) is rejected outright with "Requested node configuration is
         #not available" under --exclusive, while 8 (a power of two, divides 128 evenly) succeeds,
@@ -635,23 +665,23 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         #the nearest power of two so this always binds regardless of the configured task count.
         tasks = 2 ** int(math.log2(max(1, tasks)))
         params['tasks'] = tasks
-        params['cpus'] = int(CPUS_PER_NODE_LIMIT / tasks)
-        if params['partition'] == 'HighMem':
-            params['mem'] = MEM_PER_NODE_GB_LIMIT_HIGHMEM
+        params['cpus'] = int(cluster['cpus_per_node'] / tasks)
+        if params['partition'] == cluster['highmem_partition']:
+            params['mem'] = cluster['mem_per_node_gb_highmem']
         else:
-            params['mem'] = MEM_PER_NODE_GB_LIMIT
+            params['mem'] = cluster['mem_per_node_gb']
     else:
         params['exclusive'] = ''
-        max_cpus_per_task = max(1, int(CPUS_PER_NODE_LIMIT / tasks))
-        node_mem_cap_gb = MEM_PER_NODE_GB_LIMIT_HIGHMEM if params['partition'] == 'HighMem' else MEM_PER_NODE_GB_LIMIT
+        max_cpus_per_task = max(1, int(cluster['cpus_per_node'] / tasks))
+        node_mem_cap_gb = cluster['mem_per_node_gb_highmem'] if params['partition'] == cluster['highmem_partition'] else cluster['mem_per_node_gb']
         #Whatever cpus-per-task the parallelism heuristic above picked (which may be driven by
         #something unrelated to memory, e.g. partition.py's polarisation count) may still be too
         #few to satisfy the configured mem request under Setonix's shared-node ratio -- reserve
         #whichever is larger: the heuristic's cpus, or enough (otherwise-idle) cores to unlock the
         #configured memory. Never shrinks cpus below what the heuristic already chose.
-        mem_derived_cpus = math.ceil(min(params['mem'], node_mem_cap_gb) * 1024 / MEM_PER_CPU_MB_SHARED / tasks)
+        mem_derived_cpus = math.ceil(min(params['mem'], node_mem_cap_gb) * 1024 / cluster['mem_per_cpu_mb_shared'] / tasks)
         params['cpus'] = min(max(params['cpus'], mem_derived_cpus), max_cpus_per_task)
-        params['mem'] = min(node_mem_cap_gb, int(params['cpus'] * tasks * MEM_PER_CPU_MB_SHARED / 1024))
+        params['mem'] = min(node_mem_cap_gb, int(params['cpus'] * tasks * cluster['mem_per_cpu_mb_shared'] / 1024))
 
     #run_sofia.py is single-process/OpenMP-threaded (pipeline.threads in its SoFiA parameter
     #file), not CASA/MPI -- the generic mem-driven cpu reconciliation above pulls it up to
@@ -663,7 +693,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     #source-finding on a single continuum image is a matter of seconds to minutes, not hours.
     if 'run_sofia' in script:
         params['cpus'] = 10
-        params['mem'] = min(params['mem'], int(params['cpus'] * tasks * MEM_PER_CPU_MB_SHARED / 1024))
+        params['mem'] = min(params['mem'], int(params['cpus'] * tasks * cluster['mem_per_cpu_mb_shared'] / 1024))
         params['time'] = '02:00:00'
 
     #Use xvfb for plotting scripts
@@ -691,7 +721,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     if properties.long_running:
         params['command'] = 'ulimit -n 16384\n' + params['command']
     if properties.long_partition:
-        params['partition'] = 'long'
+        params['partition'] = cluster['long_partition']
 
     #Some containers need a different singularity module than the configured default (e.g.
     #SOFIA_CONTAINER needs "-nohost" instead of "-mpi" -- see CONTAINER_MODULES above).
@@ -900,7 +930,7 @@ def write_spw_master(filename,config,SPWs,precal_scripts,postcal_scripts,submit,
         master.write('\necho Submitted the following jobIDs over all SPWs: $allSPWIDs\n')
         master.write('\necho For jobs over all SPWs:\n')
         prefix = 'allSPW_'
-        write_all_bash_jobs_scripts(master,extn,IDs='allSPWIDs',dir=dir,prefix=prefix,pad_length=pad_length,slurm_kwargs=slurm_kwargs)
+        write_all_bash_jobs_scripts(master,extn,IDs='allSPWIDs',dir=dir,prefix=prefix,pad_length=pad_length,slurm_kwargs=slurm_kwargs,devel_partition=get_cluster_kwargs(config)['devel_partition'])
         master.write('\nln -f -s {1}{2}{3} {0}/{1}{4}{3}\n'.format(dir,prefix,summaryScript,extn,fullSummaryScript))
 
     master.write('\necho For all jobs within the {0} SPW directories:\n'.format(len(SPWs.split(','))))
@@ -1018,7 +1048,7 @@ def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_le
     master.write('cp {0} {1}/{2}_$DATE.txt\n'.format(config,dir,os.path.splitext(config)[0]))
 
     #Write each job script - kill script, summary script, error script, and timing script
-    write_all_bash_jobs_scripts(master,extn,IDs='IDs',dir=dir,echo=echo,pad_length=pad_length,slurm_kwargs=slurm_kwargs)
+    write_all_bash_jobs_scripts(master,extn,IDs='IDs',dir=dir,echo=echo,pad_length=pad_length,slurm_kwargs=slurm_kwargs,devel_partition=get_cluster_kwargs(config)['devel_partition'])
 
     #Close master submission script and make executable
     master.close()
@@ -1032,7 +1062,7 @@ def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_le
     else:
         logger.info('Master script "{0}" written in "{1}", but will not run.'.format(filename,os.path.split(os.getcwd())[-1]))
 
-def write_all_bash_jobs_scripts(master,extn,IDs,dir='jobScripts',echo=True,prefix='',pad_length=5, slurm_kwargs={}):
+def write_all_bash_jobs_scripts(master,extn,IDs,dir='jobScripts',echo=True,prefix='',pad_length=5, slurm_kwargs={}, devel_partition=DEFAULT_CLUSTER_KWARGS['devel_partition']):
 
     """Write all the bash job scripts for a given set of job IDs.
 
@@ -1053,7 +1083,9 @@ def write_all_bash_jobs_scripts(master,extn,IDs,dir='jobScripts',echo=True,prefi
     pad_length : int, optional
         Length to pad the SLURM sacct output columns.
     slurm_kwargs : list, optional
-        Parameters parsed from [slurm] section of config."""
+        Parameters parsed from [slurm] section of config.
+    devel_partition : str, optional
+        SLURM partition to use for the generated cleanup script (see [cluster] section of config)."""
 
     #Add time as extn to this pipeline run, to give unique filenames
     killScript = prefix + 'killJobs'
@@ -1073,7 +1105,7 @@ def write_all_bash_jobs_scripts(master,extn,IDs,dir='jobScripts',echo=True,prefi
 
     # Create copy so original is unmodified
     cleanup_kwargs = deepcopy(slurm_kwargs)
-    cleanup_kwargs['partition'] = 'Devel'
+    cleanup_kwargs['partition'] = devel_partition
     do = """echo "echo Removing the following: \$(ls -d *ms); %s rm -r *ms" """ % srun(cleanup_kwargs, qos=True, time=10, mem=0)
     write_bash_job_script(master, cleanupScript, extn, do, 'remove MSs/MMSs from this directory \(after pipeline has run\)', dir=dir, echo=echo)
 
@@ -1141,7 +1173,7 @@ def srun(arg_dict,qos=False,time=10,mem=4):
     return call
 
 def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scripts=0, mpi_wrapper=MPI_WRAPPER, nodes=8, ntasks_per_node=4, mem=DEFAULT_MEM_GB,plane=1, partition='work',
-               time='12:00:00', submit=False, name='', verbose=False, quiet=False, dependencies='', exclude='', account='b03-idia-ag', reservation='', modules=[], timestamp='', justrun=False):
+               time='12:00:00', submit=False, name='', verbose=False, quiet=False, dependencies='', exclude='', account='pawsey1164', reservation='', modules=[], timestamp='', justrun=False):
 
     """Write a series of sbatch job files to calibrate a CASA MeasurementSet.
 
@@ -1196,6 +1228,7 @@ def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scri
 
     kwargs = locals()
     crosscal_kwargs = get_config_kwargs(config, 'crosscal', CROSSCAL_CONFIG_KEYS)
+    cluster_kwargs = get_cluster_kwargs(config)
     pad_length = len(name)
 
     #Write sbatch file for each input python script
@@ -1205,10 +1238,10 @@ def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scri
         #Use input SLURM configuration for threadsafe tasks, otherwise call srun with single node and single thread
         if threadsafe[i]:
             write_sbatch(script,'--config {0}'.format(TMP_CONFIG),nodes=nodes,tasks=ntasks_per_node,mem=mem,plane=plane,exclude=exclude,mpi_wrapper=mpi_wrapper,container=containers[i],partition=partition,
-                        time=time,name=jobname,runname=name,SPWs=crosscal_kwargs['spw'],nspw=crosscal_kwargs['nspw'],account=account,reservation=reservation,modules=modules,justrun=justrun)
+                        time=time,name=jobname,runname=name,SPWs=crosscal_kwargs['spw'],nspw=crosscal_kwargs['nspw'],account=account,reservation=reservation,modules=modules,justrun=justrun,cluster=cluster_kwargs)
         else:
             write_sbatch(script,'--config {0}'.format(TMP_CONFIG),nodes=1,tasks=1,mem=mem,plane=1,mpi_wrapper='srun',container=containers[i],partition=partition,time=time,name=jobname,
-                        runname=name,SPWs=crosscal_kwargs['spw'],nspw=crosscal_kwargs['nspw'],exclude=exclude,account=account,reservation=reservation,modules=modules,justrun=justrun)
+                        runname=name,SPWs=crosscal_kwargs['spw'],nspw=crosscal_kwargs['nspw'],exclude=exclude,account=account,reservation=reservation,modules=modules,justrun=justrun,cluster=cluster_kwargs)
 
     #Replace all .py with .sbatch
     scripts = [os.path.split(scripts[i])[1].replace('.py','.sbatch') for i in range(len(scripts))]
@@ -1426,7 +1459,7 @@ def format_args(config,submit,quiet,dependencies,justrun):
                 logger.info('Populating sky model for selfcal using outlier_threshold={0}'.format(selfcal_kwargs['outlier_threshold']))
                 logger.info('Querying Rapid ASAKP Continuum Survey (RACS) catalog around the target phase centre to identify outliers {0}. Please allow a moment for this.'.format(txt))
                 sky_model_kwargs = deepcopy(kwargs)
-                sky_model_kwargs['partition'] = 'Devel'
+                sky_model_kwargs['partition'] = get_cluster_kwargs(config)['devel_partition']
                 mpi_wrapper = srun(sky_model_kwargs, qos=True, time=2, mem=0)
                 command = write_command('set_sky_model.py', '-C {0}'.format(config), mpi_wrapper=mpi_wrapper, container=kwargs['container'],logfile=False)
                 logger.debug('Running following command:\n\t{0}'.format(command))
@@ -1729,6 +1762,27 @@ def get_config_kwargs(config,section,expected_keys):
         raise KeyError("Keys {0} missing from section [{1}] in '{2}'. Please add these keywords to '{2}', or else run [-B --build] step again.".format(missing_keys,section,config))
 
     return kwargs
+
+def get_cluster_kwargs(config):
+
+    """Return the '[cluster]' section's kwargs from a config file, falling back to
+    DEFAULT_CLUSTER_KWARGS (unchanged) for a config predating this section, rather than hard-
+    requiring it via get_config_kwargs() -- so existing configs built before Phase 3 of the
+    Pawsey refactor keep working without regenerating them.
+
+    Arguments:
+    ----------
+    config : str
+        Path to config file.
+
+    Returns:
+    --------
+    kwargs : dict
+        Keyword arguments from the '[cluster]' section, or DEFAULT_CLUSTER_KWARGS."""
+
+    if config_parser.has_section(config,'cluster'):
+        return get_config_kwargs(config,'cluster',CLUSTER_CONFIG_KEYS)
+    return DEFAULT_CLUSTER_KWARGS
 
 def setup_logger(config,verbose=False):
 

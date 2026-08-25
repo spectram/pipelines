@@ -39,6 +39,18 @@ scripts = [ ('validate_input.py',False,''),
             ('split.py',True,''),
             ('quick_tclean.py',True,'')]
 
+[cluster]                         # Setonix hardware facts and named partitions -- see processMeerKAT.py -h for documentation. Not stamped from CLI args like [slurm] is; hand-edit if your allocation's partition names/limits ever differ.
+total_nodes_limit = 1592          # Max nodes [-N --nodes] may request
+cpus_per_node = 128               # Physical cores per node (256 logical/SMT threads, but CASA/tclean's numerically-bound work rarely benefits from hyperthreading)
+mem_per_node_gb = 230             # Usable memory (GB) per node on the shared 'work'/'long' partitions
+mem_per_node_gb_highmem = 1508    # Usable memory (GB) per node on the 'HighMem' partition
+mem_per_cpu_mb_shared = 1840      # Memory (MB) per core SLURM allows on shared (non-exclusive) partitions -- requesting more than this ratio allows makes sbatch reject the job outright
+default_mem_gb = 32               # Default [-m --mem] starting point for jobs sharing a node
+default_partition = 'work'        # Default SLURM partition
+long_partition = 'long'           # Partition used for long_partition-flagged scripts (see script_registry.py) -- longer walltime cap, far fewer nodes
+highmem_partition = 'HighMem'     # Partition for jobs needing more than mem_per_node_gb
+devel_partition = 'Devel'         # Partition used for short interactive/utility jobs (e.g. sky model queries, cleanup)
+
 [crosscal]
 minbaselines = 4                  # Minimum number of baselines to use while calibrating
 chanbin = 1                       # Number of channels to average before calibration (during partition)
