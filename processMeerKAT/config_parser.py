@@ -26,7 +26,17 @@ def parse_config(filename):
     should represent task parameters and values respectively.
     """
 
-    config = configparser.ConfigParser(allow_no_value=True)
+    #inline_comment_prefixes is required, not cosmetic: configparser's default section-header
+    #regex is '\[(?P<header>.+)\]', greedy, so a header line with a trailing '# ... ]' comment
+    #(e.g. default_config.txt's own '[cont_image]  # ... counterpart to [hi_image])') matches
+    #through to the LAST ']' on the line, silently making the section's real name the entire
+    #garbled line instead of 'cont_image' -- confirmed live: has_section(config,'cont_image')/
+    #'hi_image'/'cluster' all returned False against the real default_config.txt-derived
+    #config, silently skipping _expand_stage_pair_scripts()'s [hi_image]/[cont_image]
+    #expansion and get_cluster_kwargs()'s [cluster] override lookup. No config value in this
+    #pipeline's format contains a literal '#' (checked), so stripping ' #...' inline comments
+    #(configparser only strips after whitespace-then-#, never mid-token) is safe.
+    config = configparser.ConfigParser(allow_no_value=True, inline_comment_prefixes=('#',))
     config.read(filename)
 
     # Build a nested dictionary with tasknames at the top level
