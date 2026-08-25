@@ -3,7 +3,7 @@
 #SBATCH --account=pawsey1164
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=8
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=230GB
 #SBATCH --job-name=selfcal_part1
 #SBATCH --output=logs/%x-%j.out
@@ -18,4 +18,4 @@ module load singularity/4.1.0-mpi
 
 ulimit -n 16384
 export SINGULARITYENV_LD_LIBRARY_PATH="/opt/casacore/lib:$SINGULARITYENV_LD_LIBRARY_PATH"
-srun -c 8 singularity exec --env LD_PRELOAD=/opt/spack/opt/spack/linux-zen2/openssl-3.4.1-kd6nwzlpilohkirzkrhioadlkvonnjkz/lib64/libcrypto.so.3:/opt/spack/opt/spack/linux-zen2/openssl-3.4.1-kd6nwzlpilohkirzkrhioadlkvonnjkz/lib64/libssl.so.3 --env PYTHONPATH=/software/projects/pawsey1164/ssankar/containers/idianext_mpi4py:__REPO_ROOT__/processMeerKAT --env OMPI_COMM_WORLD_RANK=$PMI_RANK --bind /var/spool/slurmd /software/projects/pawsey1164/ssankar/containers/idianext.sif  /opt/venv/bin/python3 __REPO_ROOT__/processMeerKAT/selfcal_scripts/selfcal_part1.py --config .config.tmp
+srun -c 16 singularity exec --env LD_PRELOAD=/opt/spack/opt/spack/linux-zen2/openssl-3.4.1-kd6nwzlpilohkirzkrhioadlkvonnjkz/lib64/libcrypto.so.3:/opt/spack/opt/spack/linux-zen2/openssl-3.4.1-kd6nwzlpilohkirzkrhioadlkvonnjkz/lib64/libssl.so.3 --env PYTHONPATH=/software/projects/pawsey1164/ssankar/containers/idianext_mpi4py:__REPO_ROOT__/processMeerKAT --env OMPI_COMM_WORLD_RANK=$PMI_RANK --bind /var/spool/slurmd /software/projects/pawsey1164/ssankar/containers/idianext.sif  /opt/venv/bin/python3 __REPO_ROOT__/processMeerKAT/selfcal_scripts/selfcal_part1.py --config .config.tmp

@@ -40,7 +40,17 @@ logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s")
 
 #Set global limits for current pawsey cluster configuration
 TOTAL_NODES_LIMIT = 1592
-CPUS_PER_NODE_LIMIT = 64
+#Setonix 'work'/'long' node topology (confirmed via `scontrol show node`): 2 sockets x 64
+#cores/socket = 128 physical cores, ThreadsPerCore=2 -> 256 logical CPUs (the SLURM 'cpu'
+#TRES unit). This was previously 64 (stale -- looks like an Ilifu-era value never updated
+#for Setonix's much larger nodes), which meant e.g. selfcal_part1's --exclusive job only
+#ever requested 8x8=64 of the node's 256 logical CPUs while paying for (and blocking other
+#jobs from) the whole node. Set to the physical core count rather than the logical/SMT
+#count: CASA/tclean's FFT- and gridding-heavy work is numerically bound, where
+#oversubscribing hyperthreads rarely helps and can hurt, and Setonix's own --exclusive
+#admission control (see write_sbatch()'s exclusive_node branch) is keyed to the physical
+#core count too.
+CPUS_PER_NODE_LIMIT = 128
 NTASKS_PER_NODE_LIMIT = CPUS_PER_NODE_LIMIT
 MEM_PER_NODE_GB_LIMIT = 230 #257568 MB
 MEM_PER_NODE_GB_LIMIT_HIGHMEM = 1508 #1544192 MB
@@ -617,7 +627,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
     if script_registry.get_properties(script).exclusive_node:
         params['exclusive'] = '\n#SBATCH --exclusive'
         #Setonix's --exclusive admission control additionally requires ntasks-per-node to evenly
-        #partition the node's physical cores (128, i.e. CPUS_PER_NODE_LIMIT*2 SMT threads) --
+        #partition the node's physical cores (128, i.e. CPUS_PER_NODE_LIMIT) --
         #confirmed empirically: --ntasks-per-node=9 (this pipeline's scan-count-driven default,
         #irrelevant to core topology) is rejected outright with "Requested node configuration is
         #not available" under --exclusive, while 8 (a power of two, divides 128 evenly) succeeds,
