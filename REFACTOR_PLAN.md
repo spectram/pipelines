@@ -256,55 +256,10 @@ wrapper process/`srun` step itself is slow to exit afterward (observed ~2+ min h
 — harmless (no lingering `squeue` entry once it clears), but don't mistake it for a real hang if scripting
 around `-B`.
 
-**Next step (Phase 2)**: the full production-scale 4-stage validation run this section originally called for
-is still outstanding (see above) — the smoke test de-risks the stage-list *mechanism* but not
-production-scale `tclean`/`gaincal` behavior or Phase 7b's walltime question. `pipe_test_refactor/` is left
-in place (jobs 47573195–47573199 completed) for reference/reuse.
-
-**Done (2026-08-25): all of Phase 3.** All three parts landed as separate commits, each verified via
-`golden_diff.sh`:
-- **`8b92821`** (landed slightly ahead of the rest, while investigating the Phase 2 smoke test's queueing
-  problem): stopped force-routing `selfcal_part1`/`selfcal_part2` onto the scarce `long` partition (8 nodes,
-  4-day cap) — split `script_registry.py`'s `long_running` flag (which also drives an unrelated `ulimit -n`
-  bump) into its own `long_partition` property, left unset for selfcal so it uses whatever `[slurm]
-  partition` is configured. `science_image.py` keeps `long_partition=True`, unchanged. Confirmed via
-  `golden_diff.sh`: only the two selfcal `.sbatch` files changed (`partition: long` → `work`).
-- **`0c8ab55`** (the isolated core-count commit the plan called for): fixed the stale `CPUS_PER_NODE_LIMIT`
-  (64 → 128) — confirmed via `scontrol show node`/`sinfo` that Setonix's `work`/`long` nodes are 2×64-core
-  sockets (128 physical cores), `ThreadsPerCore=2` (256 logical). Set to the physical, not logical/SMT,
-  count (CASA/tclean's FFT-/gridding-heavy work is numerically bound and rarely benefits from
-  hyperthreading). Effect: every `cpu_intensive`-only script (not also `is_spw_fanout`, which clamps to 2
-  regardless) roughly doubles its requested `cpus-per-task`/`mem` — confirmed via `golden_diff.sh` that the
-  diff scope is exactly those 6 scripts and nothing else.
-- **`0b4c9f1`**: new `[cluster]` config section (`default_config.txt`) + `CLUSTER_CONFIG_KEYS`, replacing
-  the remaining module constants (`TOTAL_NODES_LIMIT`/`MEM_PER_NODE_GB_LIMIT`/`MEM_PER_NODE_GB_LIMIT_HIGHMEM`/
-  `MEM_PER_CPU_MB_SHARED`/`DEFAULT_MEM_GB`) and inline `'work'`/`'long'`/`'HighMem'`/`'Devel'` string
-  literals in `write_sbatch()`/`write_master()`/`format_args()`, plus the stale Ilifu `account` default in
-  `write_jobs()` (`'b03-idia-ag'` → `'pawsey1164'`). New `get_cluster_kwargs(config)` reads `[cluster]` but
-  falls back to `DEFAULT_CLUSTER_KWARGS` (mirroring the section's defaults) for a config predating this
-  section, via `config_parser.has_section()` rather than hard-requiring it — **confirmed existing configs
-  built before this change (no `[cluster]` section) still regenerate correctly via `-R`**, tested against a
-  real pre-existing config (not just the fixture). The Python module constants themselves stay (as
-  `DEFAULT_CLUSTER_KWARGS`) for argparse CLI defaults/`validate_args()`'s pre-config upper-bound checks,
-  mirroring the existing `[slurm]`/`DEFAULT_MEM_GB` duality — deliberately did not touch
-  `validate_args()`'s own limit checks, since those run during `-B` before any config file necessarily
-  exists. Verified via `golden_diff.sh`: every generated `.sbatch`/`submit_pipeline.sh` file byte-identical;
-  the only diff is `.config.tmp` (a verbatim copy of the input config) picking up the new section's content,
-  since an equivalent `[cluster]` section was added to the golden-diff fixture too.
-- **`bdd5f82`**: consolidated `CONTAINER_PYTHON`/`CONTAINER_ENV`/`CONTAINER_BINDS`/`CONTAINER_PREPEND_ENV`/
-  `CONTAINER_MODULES` (five separate container-keyed dicts) into one `ContainerProfile` frozen dataclass
-  registry (`CONTAINER_PROFILES`, looked up via `get_container_profile()`) — **stays code, not user config**,
-  per the plan's own reasoning: these are deep technical workarounds tied to one specific container build
-  (a spack-hash-suffixed OpenSSL path, a source-built `mpi4py` living outside the repo), so if `[slurm]
-  container` becomes freely swappable these must not silently stop applying to whatever container a user
-  points at instead. Added the called-for `logger.warning` (once per unique unrecognised container path, not
-  spammed per-script) when a configured container isn't in the registry. Verified via `golden_diff.sh`: zero
-  diff (purely structural); manually confirmed the warning fires once and known-container lookups
-  (`idianext.sif`, the SoFiA container) resolve identically to before.
-
-**Next step (Phase 3 is done; next in sequence per the write-up below is Phase 4)**: `-H`/`--hi_image`
-independent-flag toggle, gating the new Phase 6 HI-cube scripts and reverting this branch's
-`default_config.txt` `[image] specmode` default to `'mfs'`.
+**Next step**: the full production-scale 4-stage validation run this section originally called for is still
+outstanding (see above) — the smoke test de-risks the stage-list *mechanism* but not production-scale
+`tclean`/`gaincal` behavior or Phase 7b's walltime question. `pipe_test_refactor/` is left in place (jobs
+47573195–47573199 completed) for reference/reuse.
 
 **`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
 as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
@@ -588,19 +543,54 @@ Reference implementation: `m2-image-scripts/` already exists as a working-but-ha
 `config_parser`/`bookkeeping`/the script-list machinery at all. Port the *parameter choices*
 (tclean/SoFiA settings), not the code structure.
 
+**Addendum (2026-08-25, from the user, before implementation started)**: users need to compare cubes across
+multiple `robust`/`uvtaper` weighting choices (a common HI trade-off between sensitivity and resolution),
+so `robust` and `uvtaper` are **not** plain `[hi_image]` scalars like the prototype's other imaging settings
+— they're driven by a new `hi_combos` list, one dict per combination, following exactly the `[selfcal]
+stages` list precedent from Phase 2 (a list of dicts rather than parallel arrays, for the same reason: Phase
+2 moved away from parallel arrays specifically because they drift out of sync):
+```python
+hi_combos = [{'robust': -0.5, 'uvtaper': ''},
+             {'robust': 2.0,  'uvtaper': '30arcsec'}]
+```
+For **each** entry in `hi_combos`, the *entire* 6a→6b sequence (m2h0 dirty cube + SoFiA mask, then m2h1
+final deep clean using that combo's own mask) runs independently end-to-end — no mask-sharing/reuse
+shortcut across combos, even though a mask computed at one weighting might look similar to another; the
+combo's own dirty cube and its own SoFiA mask are what feed its own deep clean. This is a second, orthogonal
+axis from the existing `hi_niter`/`hi_threshold` 2-element paired lists (which index by *stage within one
+combo* — `[0]` for m2h0's dirty clean, `[1]` for m2h1's deep clean — and stay constant across combos in this
+initial cut; a future per-combo niter/threshold override is a plausible follow-up but not required now).
+Every other `[hi_image]` setting (`scales`/`gridder`/`wprojplanes`/`deconvolver`/`weighting`) stays a single
+scalar shared across all combos, unaffected by this addendum.
+
+Output naming: suffix imagenames with the combo's index (`_hi{c}_m2h0`/`_hi{c}_m2h1`, 0-based, mirroring
+Phase 2's `_im_%d` per-loop convention) rather than embedding the `robust`/`uvtaper` values themselves in
+the filename — `uvtaper` in particular can be `''` or contain characters (e.g. `'30arcsec'`) that are
+awkward or ambiguous in a filename, and two combos could in principle share a `robust` value with different
+`uvtaper`. Log the actual `(robust, uvtaper)` pair being used at the start of each combo's processing so the
+index-to-parameters mapping is easy to recover from the log even though it's not in the filename.
+
+Mechanism: mirror `expand_selfcal_loop_scripts()`'s existing pattern (Phase 1/2) rather than inventing a new
+one — a new `expand_hi_combo_scripts()` replicates the m2h0-mask-m2h1 script-tuple sequence `len(hi_combos)`
+times in `postcal_scripts`, the same way self-cal loops get expanded from a `[selfcal] stages`-derived
+count. `combine_tracks.py` (6c) is **not** combo-aware in this initial cut (the addendum only calls out the
+m2h0+mask+m2h1 loop) — worth flagging as a likely follow-up once 6c is actually built, since it will need to
+know which combo's outputs it's combining across two tracks, but out of scope for this addendum.
+
 - **6a**: `hicube0.py` (dirty cube `tclean` + `exportfits` + `immoments`) + its SoFiA mask pass, rewritten
   as `casatasks` function calls reading a new `[hi_image]` config section using the paired-list convention
   already established by `[selfcal]` (e.g. `hi_niter=[50000,1500000]`, `hi_threshold=['0.6mJy','0.24mJy']`,
-  plus `scales`/`gridder`/`wprojplanes`/`deconvolver`/`weighting`/`robust` lifted from the prototype's
-  literal values as defaults). Reuse `restfreq`/`imspw` from the existing `[image]` section rather than
-  duplicating them. SoFiA `.file` templates adapted from the pattern already established by
-  `aux_scripts/run_sofia.py` (note: that's a *different* SoFiA usage — continuum subtraction masking — from
-  this one; don't conflate them when refactoring).
+  plus `scales`/`gridder`/`wprojplanes`/`deconvolver`/`weighting` lifted from the prototype's literal values
+  as defaults, and `robust`/`uvtaper` resolved per-combo from `hi_combos` per the addendum above). Reuse
+  `restfreq`/`imspw` from the existing `[image]` section rather than duplicating them. SoFiA `.file`
+  templates adapted from the pattern already established by `aux_scripts/run_sofia.py` (note: that's a
+  *different* SoFiA usage — continuum subtraction masking — from this one; don't conflate them when
+  refactoring).
 - **6b**: `hicube1.py` (import SoFiA mask, final deep clean with `pbcor`, moments/rebin/fincubes export),
-  same config-driven treatment. Preserve the prototype's `tclean`-internal PB correction (`vp.setpbnumeric`/
-  `vptable`) as-is rather than unifying with `science_image.py`'s post-hoc katbeam-based `do_pb_corr` — a
-  radio-astronomy correctness call (per-channel PB variation across a cube may need this specific approach),
-  not something to silently merge during a refactor.
+  same config-driven treatment, same per-combo repetition. Preserve the prototype's `tclean`-internal PB
+  correction (`vp.setpbnumeric`/`vptable`) as-is rather than unifying with `science_image.py`'s post-hoc
+  katbeam-based `do_pb_corr` — a radio-astronomy correctness call (per-channel PB variation across a cube
+  may need this specific approach), not something to silently merge during a refactor.
 - **6c**: `combine_tracks.py` — confirmed this combines two *independently run* pipeline passes (separate
   observing tracks, each with their own full calibration run), not two things within one run. Build as a
   small standalone multi-run orchestration tool (e.g. `combine_tracks.py <config1> <config2> <output>`,
@@ -608,7 +598,8 @@ Reference implementation: `m2-image-scripts/` already exists as a working-but-ha
   single-run model where it doesn't fit.
 - New entries added to `POSTCAL_SCRIPTS`/`postcal_scripts` for 6a/6b (threadsafe/container tuples, the
   three SoFiA passes reusing the already-registered SoFiA container), gated behind `-H` via Phase 4's
-  registry-driven `remove_scripts`.
+  registry-driven `remove_scripts`, and expanded per-combo via `expand_hi_combo_scripts()` per the addendum
+  above.
 
 ## Phase 7 — Parallelism strategy for Setonix's 24h cap (goal 6) — confirmed: split into two tracks
 
