@@ -159,29 +159,68 @@ different entry point), it would raise `NameError: name 'loop' is not defined`. 
 before moving on, or at minimum flag this prominently to whoever does. After that, Phase 3 (cluster-hardware
 config) is next in sequence per the write-up below.
 
-**In progress (2026-08-25): reduced-scale real-CASA smoke test of Phase 2**, as a cheap first step before
+**Done (2026-08-25): reduced-scale real-CASA smoke test of Phase 2 — passed.** As a cheap first step before
 committing to the full production-scale 4-stage run this section calls for. Isolated test dir
 `/scratch/pawsey1164/ssankar/pipe_test_refactor/` (a copy of `pipe_test/`'s already-split
-`1738276790.1410~1420.0MHz.NGC4064.mms`, so `HI-pawsey`'s completed reference outputs in `pipe_test/` aren't
+`1738276790.1410~1420.0MHz.NGC4064.mms`, so `HI-pawsey`'s completed reference outputs in `pipe_test/` weren't
 touched), config trimmed to just `selfcal_part1.py`/`selfcal_part2.py` (skips crosscal — reuses the
 already-calibrated split MMS directly) against a **3-stage** `stages` list (dirty → phase-only selfcal →
 apply-and-deepen; skips the amp+phase loop) at a much smaller `imsize=[800,800]`/`wprojplanes=64` and
 correspondingly small `niter`/`threshold` than the validated production settings
-(`imsize=[6144,6144]`/`wprojplanes=512`). Exercises `parse_stages()`/`resolve_mask()`/
-`should_apply_prev_cal()`/`get_selfcal_args()` (including the `apply_cal='prev'` + residual-flagging path,
-via loop 2) against real CASA quickly, but is **not** a substitute for the full production-scale validation
-run — doesn't confirm loop 3's `niter=1000000` deep clean behaves, doesn't reuse the real 4-stage default,
-and a much smaller image/wproject count could mask issues that only show up at production scale (e.g.
-memory pressure, wproject plane count interactions). Found one genuine subtlety while setting this up,
-unrelated to Phase 2 itself: `expand_selfcal_loop_scripts()` (`processMeerKAT.py`) only appends the final
-loop's `selfcal_part2.sbatch` when `run_sofia.py` immediately follows the selfcal pair in `[slurm] scripts`;
-a scripts list ending in bare `selfcal_part1.py`/`selfcal_part2.py` (no trailing `run_sofia.py`) silently
-drops the last loop's `part2` (no gaincal, no mask) — confirmed pre-existing behaviour via the golden-diff
-baseline, not a Phase 2 regression, but worth fixing or at least documenting prominently if
-`run_sofia.py`-less scripts lists are ever a real configuration (this smoke test's config sidesteps it by
-making the interesting phase-cal loop not the last stage). Jobs submitted as 47572983–47572987; check
-`squeue -u ssankar` / `sacct -j 47572983,47572984,47572985,47572986,47572987` for outcome if picking this up
-after they've finished, and `pipe_test_refactor/logs/` for the CASA logs.
+(`imsize=[6144,6144]`/`wprojplanes=512`).
+
+**First attempt (jobs 47572983–47572987) hit an unrelated infrastructure problem, not a Phase 2 bug**:
+`selfcal_part1`/`selfcal_part2` were unconditionally forced onto Setonix's `long` partition (8 nodes, 4-day
+cap) regardless of the actual job's resource needs, and the lead job's projected start time was ~24h out
+purely from queue priority. Fixed at the code level (see the `long_partition` commit below) rather than
+worked around per-job; re-submitted as jobs 47573195–47573199 on `work` (1368 nodes, 24h cap) and all 5
+started within seconds/minutes and **completed successfully end-to-end** (`sacct`: all `COMPLETED`, exit
+0:0, 00:01:52/00:00:28/00:01:47/00:04:24/00:02:17 elapsed). Verified from the actual CASA task logs
+(`pipe_test_refactor/logs/*.casa`), not just exit codes:
+- Loop 0: `tclean` dirty image produced `im_0.image`/`.psf`/`.pb`/etc.; `selfcal_part2`'s `pybdsf`+`mask_image`
+  produced `im_0.pixmask`/`.islmask`/`.rms`.
+- Loop 1 (`resolve_mask('prev')`): `tclean` correctly used loop 0's `.pixmask`; `selfcal_part2` then called
+  `gaincal(caltable='...gcal1', solint='1min', calmode='p', ...)` — an exact match to `stages[1]`'s
+  configured `solint`/`derive_cal` — and it solved cleanly (240/240 solution intervals succeeded).
+- Loop 2 (`should_apply_prev_cal()` + `apply_cal='prev'`): `selfcal_part1` correctly called
+  `applycal(gaintable=['...gcal1'], interp=['linear,linearflag'], ...)` followed by
+  `flagdata(mode='rflag', datacolumn='RESIDUAL', ...)` (the `flag=True` residual-flagging path), then its
+  `tclean` deep-ish clean completed, producing `im_2.image`/`.psf`.
+
+So `parse_stages()`/`resolve_mask()`/`should_apply_prev_cal()`/`get_selfcal_args()` all round-tripped
+correctly through real CASA, including the `mask='prev'`, `derive_cal` (with `solint`), and `apply_cal='prev'`
+(with residual flagging) code paths. **Still not a substitute for the full production-scale validation run**
+this section calls for — didn't confirm loop 3's `niter=1000000` deep clean behaves at production scale or
+wall-time, doesn't reuse the real 4-stage default, and a much smaller image/wproject count could mask issues
+that only show up at production scale (memory pressure, wproject plane count interactions, `long`-partition
+walltime behavior since this test no longer even exercises that partition — see below). No CASA errors,
+tracebacks, or "severe" log lines anywhere across the run.
+
+**Found and fixed one genuine infrastructure bug while setting this up, unrelated to Phase 2 itself**:
+`write_sbatch()` forced `selfcal_part1`/`selfcal_part2` (and `science_image.py`) onto `long` via the
+`long_running` script-registry flag, conflating "needs the `ulimit -n` bump" with "needs a 4-day walltime
+cap" — `long` has only 8 nodes vs. `work`'s 1368, so this caused severe, resource-need-independent queue
+delays (confirmed: a job needing a fraction of a node projected to start ~24h out on `long`, same code
+started within seconds on `work`). Fixed by splitting the partition-forcing behaviour into its own
+`long_partition` registry property, decoupled from `long_running`'s ulimit-bump semantics; left unset
+(defaults to `[slurm] partition`) for `selfcal_part1`/`selfcal_part2`, kept `True` for `science_image.py`
+(unchanged). Verified via `golden_diff.sh` — only `selfcal_part1.sbatch`/`selfcal_part2.sbatch` changed
+(`partition: long` → `work`), `science_image.sbatch` byte-identical. This trades away automatic protection
+from loop 3's deep clean exceeding `work`'s 24h cap; per user direction, the intended mitigation is
+increasing parallelism (`ntasks_per_node`) to fit the walltime rather than relying on `long` (which is
+frequently unavailable in practice) — Phase 7b's checkpoint-chaining design is the real long-term answer for
+genuinely walltime-risky loops. Also found (but did not fix, out of scope here):
+`expand_selfcal_loop_scripts()` only appends the final loop's `selfcal_part2.sbatch` when `run_sofia.py`
+immediately follows the selfcal pair in `[slurm] scripts` — a scripts list ending in bare
+`selfcal_part1.py`/`selfcal_part2.py` silently drops the last loop's `part2` (no gaincal, no mask); confirmed
+pre-existing behaviour via the golden-diff baseline, not a Phase 2 regression, but worth fixing or at least
+documenting prominently if `run_sofia.py`-less scripts lists are ever a real configuration (this smoke test's
+own config sidesteps it by making the interesting phase-cal loop not the last stage).
+
+**Next step**: the full production-scale 4-stage validation run this section originally called for is still
+outstanding (see above) — the smoke test de-risks the stage-list *mechanism* but not production-scale
+`tclean`/`gaincal` behavior or Phase 7b's walltime question. `pipe_test_refactor/` is left in place (jobs
+47573195–47573199 completed) for reference/reuse.
 
 **`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
 as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
