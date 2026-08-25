@@ -1338,7 +1338,17 @@ def srun(arg_dict,qos=False,time=10,mem=4):
     call : str
         srun call with arguments appended."""
 
-    call = 'srun --time={0} --mem={1}GB --partition={2} --account={3}'.format(time,mem,arg_dict['partition'],arg_dict['account'])
+    #--nodes=1 --ntasks=1 is required, not cosmetic: this srun call runs standalone (outside
+    #any sbatch job allocation, where SLURM_NTASKS would otherwise apply), and Setonix's own
+    #srun default for --ntasks in that case is NOT 1 -- confirmed live: a bare 'srun
+    #--time=... --mem=... --partition=work --account=...' with no --ntasks launched 3 tasks.
+    #Every caller of this function (read_ms.py's -B field extraction, set_sky_model.py's RACS
+    #query, the cleanup helper script's 'rm -r *ms') is a single-task utility operation, never
+    #meant to run multiple times concurrently -- without this, all 3 tasks redundantly ran the
+    #full script/command at once, racing to read-modify-write the same config file. Confirmed
+    #live: this raced 'myconfig.txt' into a corrupted, partially-overwritten state (KeyError:
+    #'crosscal' in a concurrently-invoked check_spw()) on a real Setonix -B build.
+    call = 'srun --nodes=1 --ntasks=1 --time={0} --mem={1}GB --partition={2} --account={3}'.format(time,mem,arg_dict['partition'],arg_dict['account'])
     if qos:
         call += ' --qos qos-interactive'
     if arg_dict['exclude'] != '':

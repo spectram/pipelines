@@ -136,7 +136,7 @@ echo Run ./displayTimes.sh to display start and end timestamps \(after pipeline 
 
 #Create cleanup.sh file, make executable and symlink to current version
 echo "#!/bin/bash" > jobScripts/cleanup_$DATE.sh
-echo "echo Removing the following: \$(ls -d *ms); srun --time=10 --mem=0GB --partition=Devel --account=pawsey1164 --qos qos-interactive rm -r *ms"  >> jobScripts/cleanup_$DATE.sh
+echo "echo Removing the following: \$(ls -d *ms); srun --nodes=1 --ntasks=1 --time=10 --mem=0GB --partition=Devel --account=pawsey1164 --qos qos-interactive rm -r *ms"  >> jobScripts/cleanup_$DATE.sh
 chmod +x jobScripts/cleanup_$DATE.sh
 ln -f -s jobScripts/cleanup_$DATE.sh cleanup.sh
 echo Run ./cleanup.sh to remove MSs/MMSs from this directory \(after pipeline has run\).
