@@ -43,9 +43,22 @@ class ScriptProperties:
     #`casa` binary entirely, so this toggle is effectively dead weight kept only for
     #Ilifu-era parity; worth reconsidering when this field's call site is migrated.
     casa_invocation: bool = True
-    #Forces the job onto the 'long' partition (was: 'selfcal'/'image' in script,
-    #write_sbatch()).
+    #Raises the open-file-descriptor ulimit before running (was: 'selfcal'/'image' in
+    #script, write_sbatch()).
     long_running: bool = False
+    #Forces the job onto the 'long' partition (4-day walltime cap vs. 'work''s 24h) --
+    #split out from long_running rather than reusing it, since selfcal_part1/part2's ulimit
+    #need and their walltime risk aren't the same thing: selfcal was routed to 'long'
+    #by-default for loop 3's niter=1000000 deep clean (Phase 7b's stated 24h-cap concern),
+    #but forcing every user onto a 4-day-cap, 8-node partition regardless of image size or
+    #[selfcal] stages config caused real queue-priority pain even for small/quick runs (a
+    #reduced-scale Phase 2 smoke test queued ~24h out on 'long' purely from priority, not
+    #actual resource need) -- so selfcal no longer forces a partition at all; it uses
+    #whatever [slurm] partition the user configures (Phase 7b should reintroduce an
+    #opt-in-per-run escape to 'long' when a stage's niter/threshold genuinely risks exceeding
+    #'work''s 24h cap, rather than the previous unconditional override). science_image.py
+    #still forces 'long' unchanged.
+    long_partition: bool = False
     #Needs an MMS (not just an MS) to get its own parallelism, e.g. mstransform/flagdata/
     #split-family tasks that split work across an MMS's existing sub-MSs -- as opposed to
     #tclean(parallel=True), which parallelizes over its own major/minor cycle structure and
@@ -81,7 +94,7 @@ REGISTRY = {
     'run_sofia.py':      ScriptProperties(pipeline_role='run_sofia'),
     'uvsub.py':          ScriptProperties(pipeline_role='uvsub'),
     'uvcontsub.py':      ScriptProperties(requires_mms=True, pipeline_role='uvcontsub'),
-    'science_image.py':  ScriptProperties(cpu_intensive=True, long_running=True, pipeline_role='science_image'),
+    'science_image.py':  ScriptProperties(cpu_intensive=True, long_running=True, long_partition=True, pipeline_role='science_image'),
 }
 
 

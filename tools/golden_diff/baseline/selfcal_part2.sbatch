@@ -7,7 +7,7 @@
 #SBATCH --job-name=selfcal_part2
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --partition=long
+#SBATCH --partition=work
 #SBATCH --time=12:00:00
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK

@@ -680,6 +680,7 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
 
     if properties.long_running:
         params['command'] = 'ulimit -n 16384\n' + params['command']
+    if properties.long_partition:
         params['partition'] = 'long'
 
     #Some containers need a different singularity module than the configured default (e.g.
