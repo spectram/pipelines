@@ -381,7 +381,17 @@ def mask_image(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplan
     if outlier_image != '':
         outimage = outlier_image
 
-    if pixmask != '':
+    #In the run_sofia.py-driven final loop (loop >= nloops, with a usermask configured),
+    #bookkeeping.get_selfcal_args() above already resolved 'pixmask' to SoFiA's own
+    #finished mask image (converting usermask's FITS to a CASA .im if needed) -- it is
+    #not a destination to (re)build, unlike every other loop. find_outliers() still runs
+    #its own pybdsf() unconditionally just above this (harmless, its output just goes
+    #unused here), but rebuilding 'pixmask' from that PyBDSF island mask below would
+    #silently overwrite/discard the SoFiA mask with PyBDSF's own auto-mask, defeating the
+    #entire point of run_sofia.py for this loop. Skip the rebuild in that case only.
+    is_sofia_final_mask = (loop >= selfcal_stages.nloops(stages)) and (usermask != '')
+
+    if pixmask != '' and not is_sofia_final_mask:
         # Make the pixel mask, copy it over to an image to get the right coords,
         # export mask to its own image. Adapted from Brad's bdsf masking script.
 
