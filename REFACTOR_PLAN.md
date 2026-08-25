@@ -217,6 +217,40 @@ pre-existing behaviour via the golden-diff baseline, not a Phase 2 regression, b
 documenting prominently if `run_sofia.py`-less scripts lists are ever a real configuration (this smoke test's
 own config sidesteps it by making the interesting phase-cal loop not the last stage).
 
+**Done (2026-08-25): cross-branch `-B` comparison against a real, new production MS — closes a
+previously-flagged gap.** The user's real `HI-pawsey`-branch production run in
+`/scratch/pawsey1164/ssankar/HI_p1/` (a fresh dataset,
+`N4064_HI/1738276794/1738276794-sdp-l0_2025-07-14T18-45-05_mmu.ms`, `nspw=11` — separate from the
+`pipe_test`/`pipe_test_refactor` MS used above, and **not otherwise touched or run further by this
+session** per explicit instruction) gave a real opportunity to close a gap called out earlier in this
+doc: Phase 1's `default_config()` migration (5/5, `remove_scripts` → `remove_roles`) was previously
+verified only with a synthetic snippet, since `-B` needs a real MS and the golden-diff harness
+deliberately doesn't exercise it. Ran `-B` against the same real MS from both branches (`HI-pawsey` via a
+throwaway worktree, `pawsey-refactor` from this checkout — both need the container path to be visible
+inside Singularity, so worktrees must live under `/software/projects/...` or `/scratch/...`, not `/tmp`;
+also needs `module load singularity/4.1.0-mpi` and `-A pawsey1164` explicitly, since `default_config()`'s
+`srun` call has no default account), writing to `myconfig_HI-pawsey.txt`/`myconfig_pawsey-refactor.txt`
+rather than touching the user's existing `myconfig.txt` (confirmed byte-identical to a fresh
+`pawsey-refactor` `-B` run afterwards, so nothing here altered it). Result: **every config section is
+byte-identical between the two branches except `[selfcal]`**, which shows exactly Phase 2's intended
+schema change and nothing else — the same `niter`/`threshold`/`calmode`(→`derive_cal`)/`solint` values
+losslessly repackaged into the `stages` list. This is real end-to-end confirmation (real field/refant/SPW
+auto-detection against real MS metadata, not synthetic input) that Phase 1's `default_config()` migration
+is behavior-preserving.
+
+**New feature added to `pawsey-refactor` (not on `HI-pawsey`) while doing this**: `read_ms.py` (the script
+`-B` invokes to extract field IDs) now also runs `listobs()` and writes it next to the generated config
+(`<config_basename>.listobs.txt`), so every `-B` run produces a human-readable scan/field/spw summary for
+free. Verified against the real MS above — `myconfig_pawsey-refactor.listobs.txt` (13KB) has the expected
+`listobs` output (Observer, scans, field/intent table, etc.). Adds a few seconds to `-B`'s runtime; no
+config-file content changes (confirmed via the `myconfig.txt` diff above).
+
+**One operational quirk found, not a bug**: the `srun`-wrapped `read_ms.py` call `default_config()` makes
+for `-B` reliably finishes its actual work (config + listobs written, confirmed via log timestamps) but the
+wrapper process/`srun` step itself is slow to exit afterward (observed ~2+ min hang / `CG` completing state)
+— harmless (no lingering `squeue` entry once it clears), but don't mistake it for a real hang if scripting
+around `-B`.
+
 **Next step**: the full production-scale 4-stage validation run this section originally called for is still
 outstanding (see above) — the smoke test de-risks the stage-list *mechanism* but not production-scale
 `tclean`/`gaincal` behavior or Phase 7b's walltime question. `pipe_test_refactor/` is left in place (jobs
