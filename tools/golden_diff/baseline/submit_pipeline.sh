@@ -34,9 +34,6 @@ IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes split.sbatch | c
 #quick_tclean.sbatch
 IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes quick_tclean.sbatch | cut -d ' ' -f4)
 
-#concat.sbatch
-IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes concat.sbatch | cut -d ' ' -f4)
-
 #plotcal_spw.sbatch
 IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes plotcal_spw.sbatch | cut -d ' ' -f4)
 

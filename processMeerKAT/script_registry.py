@@ -98,7 +98,15 @@ REGISTRY = {
     #Phase 6 (Pawsey refactor): HI cube imaging + continuum imaging's own SoFiA-driven
     #stage chain -- see image_stages.py/image_engine.py/sofia_engine.py and
     #REFACTOR_PLAN.md's Phase 6 write-up.
-    'hi_image.py':        ScriptProperties(cpu_intensive=True, long_running=True, long_partition=True, pipeline_role='hi_image'),
+    #long_partition=False (not True): unlike selfcal_part1's deep clean (which has no
+    #configurable per-script time budget of its own), hi_image.py's walltime is entirely
+    #governed by the ordinary [slurm] time value like every other script -- unconditionally
+    #routing it to 'long' (8 nodes total on Setonix, vs. work's 1368) regardless of whether
+    #the configured time actually needs 'long''s longer walltime cap risks a much longer
+    #queue wait than the job itself takes to run for the common case (e.g. time<=24h, which
+    #fits 'work' fine). long_running=True (the ulimit bump, decoupled from partition routing
+    #since Phase 3/4) stays -- that's still warranted for a deep HI clean's open-file count.
+    'hi_image.py':        ScriptProperties(cpu_intensive=True, long_running=True, long_partition=False, pipeline_role='hi_image'),
     'hi_sofia.py':         ScriptProperties(pipeline_role='hi_sofia'),
     'cont_sofia.py':      ScriptProperties(pipeline_role='cont_sofia'),
 }

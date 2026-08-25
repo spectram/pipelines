@@ -1780,6 +1780,15 @@ def format_args(config,submit,quiet,dependencies,justrun):
         if pop_script(kwargs,'calc_refant.py'):
             kwargs['num_precal_scripts'] -= 1
 
+    #concat.py is always a no-op for nspw==1 -- its own do_concat()/main() explicitly checks
+    #`if ',' in spw:` before doing anything, and with a single spw range (no comma) there's
+    #nothing to concatenate, so it just logs an error and exits having done nothing. Still
+    #costs a full sbatch queue/schedule/container-startup cycle if left in -- pop it
+    #unconditionally here (unlike calc_refant.py above, this isn't gated on any other config
+    #key -- it's *always* a no-op for nspw==1, regardless of calcrefant/anything else).
+    if nspw == 1:
+        pop_script(kwargs,'concat.py')
+
     #Replace empty containers with default container and remove unwanted kwargs
     for i in range(len(kwargs['containers'])):
         if kwargs['containers'][i] == '':
