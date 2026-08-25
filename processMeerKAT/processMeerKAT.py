@@ -26,6 +26,7 @@ import os
 import sys
 import re
 import math
+from dataclasses import dataclass, field
 import config_parser
 import bookkeeping
 import script_registry
@@ -119,26 +120,6 @@ DEFAULT_CLUSTER_KWARGS = {
 CONTAINER = '/software/projects/pawsey1164/ssankar/containers/idianext.sif'
 SOFIA_CONTAINER = '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'
 
-#Container-specific Python interpreter overrides: some containers (e.g. idianext.sif) install
-#casatasks/casatools into a venv that isn't on PATH by default via `singularity exec`.
-CONTAINER_PYTHON = {
-    CONTAINER: '/opt/venv/bin/python3',
-}
-
-#Container-specific overrides for the [slurm] modules list (normally the same
-#singularity/4.1.0-mpi module for every script). SOFIA_CONTAINER was built for Ilifu (Ubuntu
-#22.04); Setonix's "-mpi" module flavour bind-mounts Cray fabric/Lustre host libraries
-#(libcxi, liblustreapi, etc.) built against the host's newer glibc (2.38) for MPI-enabled
-#jobs, which the container's own older glibc can't satisfy -- this breaks *every* dynamically
-#linked binary in the container, not just casampi/MPI-related ones (confirmed: even `echo`
-#and `python3` failed with GLIBC_2.38 "not found" errors). SoFiA is single-node/non-MPI and
-#doesn't need those host libraries at all -- "-nohost" (no host-library injection) avoids
-#pulling them in and the container runs cleanly. Confirmed via a standalone test job: SoFiA
-#ran successfully on a real continuum image (333 sources found, reliability ~1.0).
-CONTAINER_MODULES = {
-    SOFIA_CONTAINER: ['singularity/4.1.0-nohost'],
-}
-
 #idianext.sif's venv Python is linked against a spack-built OpenSSL newer than the container's
 #base-OS OpenSSL; without LD_PRELOAD forcing the venv's OpenSSL to load first, `import ssl`
 #(needed transitively by casatasks) fails with a symbol-version mismatch (glibc resolves
@@ -170,50 +151,105 @@ _IDIANEXT_OPENSSL_LIB = '/opt/spack/opt/spack/linux-zen2/openssl-3.4.1-kd6nwzlpi
 #See /software/projects/pawsey1164/ssankar/containers/idianext_mpi4py.
 _IDIANEXT_MPI4PY_DIR = '/software/projects/pawsey1164/ssankar/containers/idianext_mpi4py'
 
-#Container-specific extra environment variables, passed to `singularity exec --env`.
-CONTAINER_ENV = {
-    CONTAINER: {
-        'LD_PRELOAD': '{0}/libcrypto.so.3:{0}/libssl.so.3'.format(_IDIANEXT_OPENSSL_LIB),
-        #PYTHONPATH is otherwise set by the site's singularity module to just SCRIPT_DIR (so
-        #`import config_parser` etc. work) -- must be preserved here, since --env replaces
-        #rather than appends to the container's default.
-        'PYTHONPATH': '{0}:{1}'.format(_IDIANEXT_MPI4PY_DIR, SCRIPT_DIR),
-        #casampi's MPIEnvironment only attempts MPI initialisation if 'OMPI_COMM_WORLD_RANK' is
-        #present in the environment (an OpenMPI-only check; Setonix's srun launches via
-        #PMI/PALS, which never sets it). It's only checked for presence, not correctness, so
-        #pass through the real per-task rank Slurm already provides via $PMI_RANK. This must
-        #stay as the literal string '$PMI_RANK' (not expanded here) so each srun-launched task
-        #substitutes its own value at runtime.
-        'OMPI_COMM_WORLD_RANK': '$PMI_RANK',
-    },
-}
+#Phase 3 (Pawsey refactor): consolidates what were four separate container-keyed dicts
+#(CONTAINER_PYTHON/CONTAINER_ENV/CONTAINER_BINDS/CONTAINER_PREPEND_ENV/CONTAINER_MODULES) into
+#one registry of per-container overrides. Deliberately stays code, not user config (unlike
+#[cluster] above): these are deep technical workarounds tied to one specific container build
+#(e.g. a spack-hash-suffixed OpenSSL path, a source-built mpi4py living outside the repo) -- if
+#[slurm] container became freely swappable via one of these fields living in a user config,
+#these would silently stop applying to any other container the user points at.
+@dataclass(frozen=True)
+class ContainerProfile:
+    #Some containers (e.g. idianext.sif) install casatasks/casatools into a venv that isn't on
+    #PATH by default via `singularity exec`.
+    python: str = 'python3'
+    #Extra environment variables, passed to `singularity exec --env` (replaces, not appends).
+    env: dict = field(default_factory=dict)
+    #`singularity exec --bind` paths.
+    binds: list = field(default_factory=list)
+    #Vars to PREPEND to (not replace) via a host-side shell `export` inserted before the
+    #singularity exec call, rather than via `singularity exec --env` -- see write_command().
+    prepend_env: dict = field(default_factory=dict)
+    #Override for the [slurm] modules list (normally the same singularity/4.1.0-mpi module for
+    #every script). None means "use the configured [slurm] modules unchanged".
+    modules: list = None
 
-#Container-specific `singularity exec --bind` paths. idianext.sif's MPI (via Cray's PALS launcher)
-#needs to read its per-job rendezvous state from /var/spool/slurmd on the compute node, which
-#isn't bound into the container by the site's default bind list -- without it, MPI_Init aborts.
-CONTAINER_BINDS = {
-    CONTAINER: ['/var/spool/slurmd'],
-}
-
-#Container-specific vars to PREPEND to (not replace) via a host-side shell `export` inserted
-#before the singularity exec call, rather than via `singularity exec --env`. The site's
-#singularity module sets SINGULARITYENV_LD_LIBRARY_PATH to a long list of Cray MPI/fabric
-#library paths ending in a literal, unexpanded '$LD_LIBRARY_PATH' (resolved by singularity at
-#container-entry time, not by the calling shell) -- confirmed empirically that
-#`--env LD_LIBRARY_PATH=...` does NOT compose with this mechanism, it silently replaces it,
-#dropping the Cray paths (a latent risk for multi-node MPI, though not yet observed to break our
-#current single-node jobs). Exporting SINGULARITYENV_LD_LIBRARY_PATH ourselves beforehand, with
-#our addition prepended to the *current* value of that same host-side variable, preserves the
-#trailing '$LD_LIBRARY_PATH' token intact and correctly composes with the site's own value.
-CONTAINER_PREPEND_ENV = {
-    CONTAINER: {
-        #idianext.sif's python-casacore image-writing extension (casacore.images, used by
+CONTAINER_PROFILES = {
+    CONTAINER: ContainerProfile(
+        python='/opt/venv/bin/python3',
+        env={
+            'LD_PRELOAD': '{0}/libcrypto.so.3:{0}/libssl.so.3'.format(_IDIANEXT_OPENSSL_LIB),
+            #PYTHONPATH is otherwise set by the site's singularity module to just SCRIPT_DIR (so
+            #`import config_parser` etc. work) -- must be preserved here, since --env replaces
+            #rather than appends to the container's default.
+            'PYTHONPATH': '{0}:{1}'.format(_IDIANEXT_MPI4PY_DIR, SCRIPT_DIR),
+            #casampi's MPIEnvironment only attempts MPI initialisation if 'OMPI_COMM_WORLD_RANK'
+            #is present in the environment (an OpenMPI-only check; Setonix's srun launches via
+            #PMI/PALS, which never sets it). It's only checked for presence, not correctness, so
+            #pass through the real per-task rank Slurm already provides via $PMI_RANK. This must
+            #stay as the literal string '$PMI_RANK' (not expanded here) so each srun-launched
+            #task substitutes its own value at runtime.
+            'OMPI_COMM_WORLD_RANK': '$PMI_RANK',
+        },
+        #idianext.sif's MPI (via Cray's PALS launcher) needs to read its per-job rendezvous state
+        #from /var/spool/slurmd on the compute node, which isn't bound into the container by the
+        #site's default bind list -- without it, MPI_Init aborts.
+        binds=['/var/spool/slurmd'],
+        #The site's singularity module sets SINGULARITYENV_LD_LIBRARY_PATH to a long list of
+        #Cray MPI/fabric library paths ending in a literal, unexpanded '$LD_LIBRARY_PATH'
+        #(resolved by singularity at container-entry time, not by the calling shell) --
+        #confirmed empirically that `--env LD_LIBRARY_PATH=...` does NOT compose with this
+        #mechanism, it silently replaces it, dropping the Cray paths (a latent risk for
+        #multi-node MPI, though not yet observed to break our current single-node jobs).
+        #Exporting SINGULARITYENV_LD_LIBRARY_PATH ourselves beforehand, with our addition
+        #prepended to the *current* value of that same host-side variable, preserves the
+        #trailing '$LD_LIBRARY_PATH' token intact and correctly composes with the site's own
+        #value. idianext.sif's python-casacore image-writing extension (casacore.images, used by
         #PyBDSF's CASA-format mask export in selfcal_part2.py) needs libcasa_python3.so.8/
         #libcasa_images.so.8/libcasa_casa.so.8 from the container's own casacore 3.7.1 build,
         #which isn't on the default library search path.
-        'LD_LIBRARY_PATH': '/opt/casacore/lib',
-    },
+        prepend_env={'LD_LIBRARY_PATH': '/opt/casacore/lib'},
+    ),
+    #SOFIA_CONTAINER was built for Ilifu (Ubuntu 22.04); Setonix's "-mpi" module flavour
+    #bind-mounts Cray fabric/Lustre host libraries (libcxi, liblustreapi, etc.) built against the
+    #host's newer glibc (2.38) for MPI-enabled jobs, which the container's own older glibc can't
+    #satisfy -- this breaks *every* dynamically linked binary in the container, not just
+    #casampi/MPI-related ones (confirmed: even `echo` and `python3` failed with GLIBC_2.38 "not
+    #found" errors). SoFiA is single-node/non-MPI and doesn't need those host libraries at all --
+    #"-nohost" (no host-library injection) avoids pulling them in and the container runs cleanly.
+    #Confirmed via a standalone test job: SoFiA ran successfully on a real continuum image (333
+    #sources found, reliability ~1.0).
+    SOFIA_CONTAINER: ContainerProfile(modules=['singularity/4.1.0-nohost']),
 }
+
+_WARNED_UNKNOWN_CONTAINERS = set()
+
+def get_container_profile(container):
+
+    """Look up a container's declared ContainerProfile by path. An unregistered container (e.g.
+    a user swapping [slurm] container for a different build) gets an all-default
+    ContainerProfile() -- logs a one-time warning per unique unrecognised container path, since
+    that silently drops every Pawsey-specific fix (venv python, MPI env/binds, library paths)
+    this registry exists for.
+
+    Arguments:
+    ----------
+    container : str
+        Path to singularity container.
+
+    Returns:
+    --------
+    profile : class ``ContainerProfile``"""
+
+    profile = CONTAINER_PROFILES.get(container)
+    if profile is None:
+        if container not in _WARNED_UNKNOWN_CONTAINERS:
+            logger.warning("Container '{0}' isn't in the known CONTAINER_PROFILES registry and isn't the default -- "
+                            "any Pawsey-specific container fixes (venv python, MPI env/binds, library paths) won't apply. "
+                            "If this container needs its own fixes, add a ContainerProfile entry for it.".format(container))
+            _WARNED_UNKNOWN_CONTAINERS.add(container)
+        profile = ContainerProfile()
+    return profile
 
 MPI_WRAPPER = 'srun'
 PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts run before calibration at top level directory when nspw > 1
@@ -539,17 +575,18 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
         params['plot_call'] = 'xvfb-run -a'
     if logfile:
         params['casa_log'] = '--logfile {LOG_DIR}/{job}.casa'.format(**params)
+    profile = get_container_profile(container)
     if casa_script:
         params['casa_call'] = "casa --nologger --nogui {casa_log} -c".format(**params)
     else:
-        params['casa_call'] = CONTAINER_PYTHON.get(container, 'python3')
+        params['casa_call'] = profile.python
 
-    params['env_flags'] = ''.join(' --env {0}={1}'.format(k, v) for k, v in CONTAINER_ENV.get(container, {}).items())
-    params['env_flags'] += ''.join(' --bind {0}'.format(b) for b in CONTAINER_BINDS.get(container, []))
-    #Emitted as host-side `export`s (see CONTAINER_PREPEND_ENV) rather than `--env`, so they
-    #compose with (rather than clobber) any same-named SINGULARITYENV_* the site module sets.
+    params['env_flags'] = ''.join(' --env {0}={1}'.format(k, v) for k, v in profile.env.items())
+    params['env_flags'] += ''.join(' --bind {0}'.format(b) for b in profile.binds)
+    #Emitted as host-side `export`s (see ContainerProfile.prepend_env) rather than `--env`, so
+    #they compose with (rather than clobber) any same-named SINGULARITYENV_* the site module sets.
     params['prepend_env'] = ''.join('export SINGULARITYENV_{0}="{1}:$SINGULARITYENV_{0}"\n'.format(k, v)
-                                     for k, v in CONTAINER_PREPEND_ENV.get(container, {}).items())
+                                     for k, v in profile.prepend_env.items())
 
     if arrayJob:
         command += """#Iterate over SPWs in job array, launching one after the other
@@ -724,8 +761,10 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         params['partition'] = cluster['long_partition']
 
     #Some containers need a different singularity module than the configured default (e.g.
-    #SOFIA_CONTAINER needs "-nohost" instead of "-mpi" -- see CONTAINER_MODULES above).
-    modules = CONTAINER_MODULES.get(container, modules)
+    #SOFIA_CONTAINER needs "-nohost" instead of "-mpi" -- see ContainerProfile.modules above).
+    container_modules = get_container_profile(container).modules
+    if container_modules is not None:
+        modules = container_modules
     params['modules'] = ''
     if len(modules) > 0:
         for module in modules:
