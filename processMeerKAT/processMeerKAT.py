@@ -535,7 +535,7 @@ def validate_args(args,config,parser=None):
             raise_error(config, msg, parser)
 
 def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTAINER,\
-                  casa_script=False,logfile=True,plot=False,SPWs='',nspw=1, cpus=1):
+                  casa_script=False,logfile=True,plot=False,SPWs='',nspw=1, cpus=1, mpi=True):
 
     """Write bash command to call a script (with args) directly with srun, or within sbatch file, optionally via CASA.
 
@@ -561,6 +561,17 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
         Comma-separated list of spw ranges.
     nspw : int, optional
         Number of spectral windows.
+    mpi : bool, optional
+        Inject the container profile's MPI-triggering env vars (e.g. idianext.sif's
+        'OMPI_COMM_WORLD_RANK', which makes casampi attempt MPI initialisation)? Default True,
+        which is correct for every sbatch-generated job (multi-task 'threadsafe' scripts need it;
+        single-task ones just get an inert rank-0 env var). Set False for the two ad hoc,
+        non-sbatch 'srun' calls made directly from this script (read_ms.py's '-B' field
+        extraction, set_sky_model.py's RACS query) -- neither is MPI-parallel, and outside an
+        sbatch job's task allocation casampi's MPI_Init hangs/spins indefinitely instead of
+        completing, since there's no real multi-task rendezvous for it to join (confirmed: two
+        'read_ms.py' processes left spinning at ~95% CPU with no further progress after the
+        script's own work was already done and logged).
 
     Returns:
     --------
@@ -592,7 +603,8 @@ def write_command(script,args,name='job',mpi_wrapper=MPI_WRAPPER,container=CONTA
     else:
         params['casa_call'] = profile.python
 
-    params['env_flags'] = ''.join(' --env {0}={1}'.format(k, v) for k, v in profile.env.items())
+    env = profile.env if mpi else {k: v for k, v in profile.env.items() if k != 'OMPI_COMM_WORLD_RANK'}
+    params['env_flags'] = ''.join(' --env {0}={1}'.format(k, v) for k, v in env.items())
     params['env_flags'] += ''.join(' --bind {0}'.format(b) for b in profile.binds)
     #Emitted as host-side `export`s (see ContainerProfile.prepend_env) rather than `--env`, so
     #they compose with (rather than clobber) any same-named SINGULARITYENV_* the site module sets.
@@ -1491,7 +1503,7 @@ def default_config(arg_dict):
             params += ' -P'
         if arg_dict['verbose']:
             params += ' -v'
-        command = write_command('read_ms.py', params, mpi_wrapper=mpi_wrapper, container=arg_dict['container'],logfile=False)
+        command = write_command('read_ms.py', params, mpi_wrapper=mpi_wrapper, container=arg_dict['container'],logfile=False, mpi=False)
         logger.info('Extracting field IDs from MeasurementSet "{0}" using CASA.'.format(MS))
         logger.debug('Using the following command:\n\t{0}'.format(command))
         os.system(command)
@@ -1638,7 +1650,7 @@ def format_args(config,submit,quiet,dependencies,justrun):
                 sky_model_kwargs = deepcopy(kwargs)
                 sky_model_kwargs['partition'] = get_cluster_kwargs(config)['devel_partition']
                 mpi_wrapper = srun(sky_model_kwargs, qos=True, time=2, mem=0)
-                command = write_command('set_sky_model.py', '-C {0}'.format(config), mpi_wrapper=mpi_wrapper, container=kwargs['container'],logfile=False)
+                command = write_command('set_sky_model.py', '-C {0}'.format(config), mpi_wrapper=mpi_wrapper, container=kwargs['container'],logfile=False, mpi=False)
                 logger.debug('Running following command:\n\t{0}'.format(command))
                 os.system(command)
 
