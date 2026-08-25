@@ -93,7 +93,7 @@ SELFCAL_CONFIG_KEYS = ['stages','loop','cell','robust','imsize','wprojplanes','u
 #Phase 6 (Pawsey refactor): '[image]' renamed '[cont_image]' and given the same
 #'stages'-list shape as '[hi_image]' (replacing the old flat 'niter'/'threshold'/'mask'
 #scalars) -- see image_stages.py and REFACTOR_PLAN.md's Phase 6 write-up.
-CONT_IMAGE_CONFIG_KEYS = ['vis','stages','cell','imsize','robust','uvtaper','scales','gridder','wprojplanes','deconvolver','weighting','nterms','specmode','restfreq','restoringbeam','stokes','rebin','rebin_factor','pb_correct','pbthreshold','pbband','outlierfile','combo','stage']
+CONT_IMAGE_CONFIG_KEYS = ['vis','stages','cell','imsize','robust','uvtaper','scales','gridder','wprojplanes','deconvolver','weighting','nterms','specmode','restfreq','restoringbeam','stokes','rebin','rebin_factor','pb_correct','pbthreshold','pbband','outlierfile','sofia_mask_params','sofia_final_params','combo','stage']
 #New in Phase 6: HI cube imaging, images '[run] hi_contsub_vis' (uvcontsub.py's output) via
 #a 'stages' list (image_stages.py) crossed with 'hi_combos' (one entry per robust/uvtaper
 #weighting combination to image, each getting the full stage chain independently -- see
@@ -101,7 +101,7 @@ CONT_IMAGE_CONFIG_KEYS = ['vis','stages','cell','imsize','robust','uvtaper','sca
 #read from '[cont_image]') so a '-H'-only run's imaging behaviour never depends on
 #'[cont_image]''s contents at all -- uvcontsub.py's 'fitspw'/'fitorder' live in their own
 #'[contsub]' section (shared by '-H' and standalone '--contsub', not HI-specific).
-HI_IMAGE_CONFIG_KEYS = ['hi_combos','stages','cell','imsize','scales','gridder','wprojplanes','deconvolver','weighting','restfreq','imspw','rebin','rebin_factor','pb_correct','pbthreshold','pbband','combo','stage']
+HI_IMAGE_CONFIG_KEYS = ['hi_combos','stages','cell','imsize','scales','gridder','wprojplanes','deconvolver','weighting','restfreq','imspw','rebin','rebin_factor','pb_correct','pbthreshold','pbband','sofia_mask_params','sofia_final_params','combo','stage']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
 

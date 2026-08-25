@@ -56,7 +56,15 @@ def main(args, taskvals):
     #already includes that same prefix).
     output_dir = combo_dir
     mask_basename = 'stage{0}'.format(stage)
-    sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, output_dir, mask_basename)
+    #SoFiA parameter overrides distinguishing this pass from the other (S+C kernels,
+    #reliability threshold, which output products get written) -- see default_config.txt's
+    #'sofia_mask_params'/'sofia_final_params' comment. Dict-valued, so read directly rather
+    #than via config_parser.validate_args() (str/int/float/bool only).
+    if final:
+        overrides = taskvals['hi_image'].get('sofia_final_params', {})
+    else:
+        overrides = taskvals['hi_image'].get('sofia_mask_params', {})
+    sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, output_dir, mask_basename, overrides=overrides)
 
     if final:
         combo += 1

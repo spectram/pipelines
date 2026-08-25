@@ -5,16 +5,22 @@
 # This file can instead be used as a template for setting up your own
 # parameter files.
 #
-# Final pass: the real source-finding/catalog step, run once per combo on the final
-# (optionally rebinned, optionally PB-corrected) exported image -- distinctly tuned from the
-# masking pass (looser S+C kernels, higher reliability threshold, writes catalog/cubelets/PV
-# too). Ported from m2-image-scripts/fincubes/rebinsof.file (origin/HI-dev) -- see
-# REFACTOR_PLAN.md's Phase 6 write-up. input.data is patched at runtime by
-# hi_sofia.py/cont_sofia.py.
+# Shared base template for both of sofia_engine.py's SoFiA passes -- the masking pass
+# (source-finds on a non-final imaging stage's image to produce the island mask the next
+# stage's tclean uses, mask='prev') and the final pass (the real source-finding/catalog
+# step, run once per combo on the final exported image). The two passes are ~90% identical;
+# where they genuinely differ (S+C kernels, reliability threshold, which output products get
+# written), sofia_engine.run_pass() patches this base at runtime via the
+# [hi_image]/[cont_image] 'sofia_mask_params'/'sofia_final_params' config overrides -- see
+# default_config.txt. input.data/output.directory/output.filename are also patched at
+# runtime by hi_sofia.py/cont_sofia.py, regardless of pass.
 #
-# NOTE (deferred, not yet implemented): the prototype's own use of this template expected a
-# data-processing step just before this pass -- adding a common beam to the header,
-# converting spectral axis units, etc. That step doesn't exist yet; this pass currently runs
+# Ported from m2-image-scripts (origin/HI-dev): m2h0/m2h0sof.file (masking pass) and
+# fincubes/rebinsof.file (final pass) -- see REFACTOR_PLAN.md's Phase 6 write-up.
+#
+# NOTE (deferred, not yet implemented): the prototype's own use of the final pass expected a
+# data-processing step just before it -- adding a common beam to the header, converting
+# spectral axis units, etc. That step doesn't exist yet; the final pass currently runs
 # directly on finalize_stage()'s exported FITS. Add that step here (before the sofia() call
 # in hi_sofia.py/cont_sofia.py) when it's built.
 
@@ -84,7 +90,7 @@ rippleFilter.interpolate       =  false
 # S+C finder
 
 scfind.enable               =  true
-scfind.kernelsXY           =  0, 4, 8, 12
+scfind.kernelsXY           =  0, 4, 8
 scfind.kernelsZ               =  0, 3, 5, 7
 scfind.threshold           =  4.0
 scfind.replacement           =  2.0
@@ -122,7 +128,7 @@ linker.keepNegative           =  false
 
 reliability.enable           =  true
 reliability.parameters         =  peak, sum, mean
-reliability.threshold         =  0.95
+reliability.threshold         =  0.9
 reliability.autoKernel         =  true
 reliability.minSNR           =  3.0
 reliability.minPixels         =  0
@@ -152,7 +158,7 @@ parameter.offset           =  true
 
 output.directory           =
 output.filename               =
-output.writeCatASCII         =  true
+output.writeCatASCII         =  false
 output.writeCatXML           =  true
 output.writeCatSQL           =  false
 output.writeNoise           =  true
@@ -160,9 +166,9 @@ output.writeFiltered         =  false
 output.writeMask           =  true
 output.writeMask2d           =  false
 output.writeRawMask           =  false
-output.writeMoments           =  true
-output.writeCubelets         =  true
+output.writeMoments           =  false
+output.writeCubelets         =  false
 output.marginCubelets         =  5
 output.thresholdMom12         =  0.0
 output.overwrite           =  true
-output.writePV               =  true
+output.writePV               =  false

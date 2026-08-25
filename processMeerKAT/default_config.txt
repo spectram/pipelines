@@ -131,6 +131,16 @@ pb_correct = False                # Apply katbeam PB-correction to the final sta
 pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
 pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"
 outlierfile = ''
+# SoFiA parameter overrides applied on top of the shared default_hi_sofmask.txt base
+# template at runtime (sofia_engine.run_pass()) -- one dict for the masking pass (every
+# non-final stage), one for the final source-finding pass (the last stage). Key namespace
+# is SoFiA's own dotted parameter-file format, not this pipeline's.
+sofia_mask_params = {'scfind.kernelsXY': '0, 4, 8', 'reliability.threshold': 0.9,
+                      'output.writeCatASCII': False, 'output.writeMoments': False,
+                      'output.writeCubelets': False, 'output.writePV': False}
+sofia_final_params = {'scfind.kernelsXY': '0, 4, 8, 12', 'reliability.threshold': 0.95,
+                       'output.writeCatASCII': True, 'output.writeMoments': True,
+                       'output.writeCubelets': True, 'output.writePV': True}
 combo = 0                         # Internal: unused for [cont_image] (no combo axis, unlike [hi_image]) -- reserved for consistency
 stage = 0                         # Internal: current stage index in 'stages', advanced by cont_sofia.py
 
@@ -161,6 +171,16 @@ rebin_factor = [2, 2, 1]          # imrebin() factor, only used when rebin=True
 pb_correct = False                # Apply katbeam PB-correction to the final stage's cube before export?
 pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
 pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"
+# SoFiA parameter overrides applied on top of the shared default_hi_sofmask.txt base
+# template at runtime (sofia_engine.run_pass()) -- one dict for the masking pass (every
+# non-final stage), one for the final source-finding pass (the last stage). Key namespace
+# is SoFiA's own dotted parameter-file format, not this pipeline's.
+sofia_mask_params = {'scfind.kernelsXY': '0, 4, 8', 'reliability.threshold': 0.9,
+                      'output.writeCatASCII': False, 'output.writeMoments': False,
+                      'output.writeCubelets': False, 'output.writePV': False}
+sofia_final_params = {'scfind.kernelsXY': '0, 4, 8, 12', 'reliability.threshold': 0.95,
+                       'output.writeCatASCII': True, 'output.writeMoments': True,
+                       'output.writeCubelets': True, 'output.writePV': True}
 combo = 0                         # Internal: current index into 'hi_combos', advanced by hi_sofia.py
 stage = 0                         # Internal: current stage index in 'stages' (reset to 0 when 'combo' advances), advanced by hi_sofia.py
 

@@ -105,6 +105,8 @@ pb_correct = False
 pbthreshold = 0.1
 pbband = 'LBand'
 outlierfile = ''
+sofia_mask_params = {'scfind.kernelsXY': '0, 4, 8', 'reliability.threshold': 0.9, 'output.writeCatASCII': False, 'output.writeMoments': False, 'output.writeCubelets': False, 'output.writePV': False}
+sofia_final_params = {'scfind.kernelsXY': '0, 4, 8, 12', 'reliability.threshold': 0.95, 'output.writeCatASCII': True, 'output.writeMoments': True, 'output.writeCubelets': True, 'output.writePV': True}
 combo = 0
 stage = 0
 
@@ -129,6 +131,8 @@ rebin_factor = [2, 2, 1]
 pb_correct = False
 pbthreshold = 0.1
 pbband = 'LBand'
+sofia_mask_params = {'scfind.kernelsXY': '0, 4, 8', 'reliability.threshold': 0.9, 'output.writeCatASCII': False, 'output.writeMoments': False, 'output.writeCubelets': False, 'output.writePV': False}
+sofia_final_params = {'scfind.kernelsXY': '0, 4, 8, 12', 'reliability.threshold': 0.95, 'output.writeCatASCII': True, 'output.writeMoments': True, 'output.writeCubelets': True, 'output.writePV': True}
 combo = 0
 stage = 0
 

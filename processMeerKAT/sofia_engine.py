@@ -18,8 +18,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 #Ported from m2-image-scripts (origin/HI-dev) -- see REFACTOR_PLAN.md's Phase 6 write-up.
-MASK_TEMPLATE = 'default_hi_sofmask_mask.txt'
-FINAL_TEMPLATE = 'default_hi_sofmask_final.txt'
+#Single shared base template for both the masking and final passes -- see its own header
+#comment. Per-pass differences (S+C kernels, reliability threshold, which output products
+#get written) are applied at runtime via run_pass()'s 'overrides' argument.
+TEMPLATE = 'default_hi_sofmask.txt'
 
 
 def parse_sofia_config(file_path):
@@ -59,7 +61,14 @@ def update_sofia_config(file_path, updates):
             if line and not line.startswith('#') and '=' in line:
                 key, _ = map(str.strip, line.split('=', 1))
                 if key in updates:
-                    file.write(f"{key} = {updates[key]}\n")
+                    value = updates[key]
+                    #SoFiA's own template files (and parse_sofia_config() above) use
+                    #lowercase 'true'/'false' -- Python's default str(bool) gives
+                    #'True'/'False', which wouldn't round-trip back correctly and may not
+                    #be accepted by SoFiA's own parser either.
+                    if isinstance(value, bool):
+                        value = 'true' if value else 'false'
+                    file.write(f"{key} = {value}\n")
                 else:
                     file.write(f"{line}\n")
             else:
@@ -82,16 +91,15 @@ def run_sofia(paramfile):
         raise RuntimeError("SoFiA exited with code {0} running '{1}'. See the log above for SoFiA's own error message.".format(result.returncode, paramfile))
 
 
-def run_pass(script_dir, run_dir, is_final, input_fits, output_dir, mask_name):
+def run_pass(script_dir, run_dir, is_final, input_fits, output_dir, mask_name, overrides={}):
 
-    """Run one SoFiA pass (masking or final), copying the appropriate template into
-    'run_dir' (once) and patching it for this call.
+    """Run one SoFiA pass (masking or final), copying the shared TEMPLATE into 'run_dir'
+    (once, per pass name) and patching it for this call.
 
     Arguments:
     ----------
     script_dir : str
-        Directory the template files (MASK_TEMPLATE/FINAL_TEMPLATE) live in
-        (`processMeerKAT.SCRIPT_DIR`).
+        Directory TEMPLATE lives in (`processMeerKAT.SCRIPT_DIR`).
     run_dir : str
         Directory to copy/patch the parameter file into (typically the current combo's
         output directory).
@@ -104,13 +112,19 @@ def run_pass(script_dir, run_dir, is_final, input_fits, output_dir, mask_name):
     mask_name : str
         Base filename (no extension) SoFiA should derive its outputs from -- matches
         `aux_scripts/run_sofia.py`'s '{0}_mask.fits' convention when `output.filename` is
-        left blank, so `image_stages.resolve_mask()` can find it."""
+        left blank, so `image_stages.resolve_mask()` can find it.
+    overrides : dict
+        SoFiA dotted-key -> value overrides applied on top of TEMPLATE for this pass
+        (e.g. [hi_image]/[cont_image]'s 'sofia_mask_params'/'sofia_final_params') --
+        this is what actually differentiates the masking pass from the final pass, since
+        both now copy from the same shared base template."""
 
-    template = FINAL_TEMPLATE if is_final else MASK_TEMPLATE
+    #The copy destination on disk still gets a separate file per pass name (not the shared
+    #TEMPLATE itself) so each stays independently inspectable/re-patchable after the fact.
     paramfile = os.path.join(run_dir, 'sofmask_{0}.txt'.format('final' if is_final else 'mask'))
 
     if not os.path.exists(paramfile):
-        with open(os.path.join(script_dir, template)) as src, open(paramfile, 'w') as dst:
+        with open(os.path.join(script_dir, TEMPLATE)) as src, open(paramfile, 'w') as dst:
             dst.write(src.read())
 
     updates = {
@@ -118,6 +132,7 @@ def run_pass(script_dir, run_dir, is_final, input_fits, output_dir, mask_name):
         'output.directory': output_dir,
         'output.filename': mask_name,
     }
+    updates.update(overrides)
     update_sofia_config(paramfile, updates)
 
     logger.info('Running SoFiA ({0} pass) on "{1}".'.format('final' if is_final else 'masking', input_fits))

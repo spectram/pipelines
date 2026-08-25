@@ -378,7 +378,7 @@ pattern as Phase 2's original verification gap.
 
 **Deferred, not implemented this phase** (documented in-code as a seam): a data-processing step before the
 final SoFiA pass (common beam to header, spectral axis unit conversion) that the prototype's own fincubes
-stage expected — noted in `default_hi_sofmask_final.txt`'s header comment for whoever adds it next.
+stage expected — noted in `default_hi_sofmask.txt`'s header comment for whoever adds it next (this template was later merged with the masking-pass template into one shared base file -- see the cleanup note below Phase 8).
 `combine_tracks.py` (6c) also not ported — out of scope per this round's Q&A (no new track-combining tool
 for continuum in this phase, and the existing HI-dev one wasn't touched).
 
@@ -733,7 +733,7 @@ verification details.
   needed, and the existing HI-dev prototype version wasn't touched or copied in.
 - **Deferred, not implemented**: a data-processing step the prototype's fincubes stage expected before its
   final SoFiA pass (common beam to header, spectral axis unit conversion) — noted as an in-code seam in
-  `default_hi_sofmask_final.txt`'s header comment for whoever adds it next. `exportfits` also deliberately
+  `default_hi_sofmask.txt`'s header comment for whoever adds it next (this template was later merged with the masking-pass template into one shared base file -- see the cleanup note below Phase 8). `exportfits` also deliberately
   keeps native frequency units now (dropped the prototype's `velocity=True, optical=True`), per the user's
   direction that this belongs in that same future post-processing step.
 - New `script_registry` roles (`hi_image`, `hi_sofia`, `cont_sofia`), gated behind `-H`/`-I` respectively via
@@ -779,6 +779,18 @@ verification details.
 Not a one-time step — a recurring practice throughout Phases 1–7 (see Foundational Decisions). Once this
 branch's baseline (through at least Phase 5) is validated via golden-diff and ideally a real small-MS run,
 it can start superseding `HI-pawsey`.
+
+**Post-Phase-6 cleanup (not a numbered phase)**: `default_hi_sofmask_mask.txt`/`default_hi_sofmask_final.txt`
+(Phase 6's two ~90%-identical SoFiA templates) were consolidated into one shared `default_hi_sofmask.txt` base
+template, with the masking-pass/final-pass differences (S+C kernels, reliability threshold, which output
+products get written) now expressed as `[hi_image]`/`[cont_image]` config-driven overrides
+(`sofia_mask_params`/`sofia_final_params`, applied at runtime by `sofia_engine.run_pass()`'s new `overrides`
+argument) instead of baked into two separate template files. Same cleanup round also: dropped `[cont_image]`'s
+unused `imspw` (continuum imaging now always uses `spw=''`); moved uvcontsub.py's `fitspw`/`fitorder` out of
+`[cont_image]` into their own `[contsub]` section; fixed `selfcal_part2.mask_image()` silently overwriting
+`run_sofia.py`'s SoFiA mask with PyBDSF's own auto-mask in the final SoFiA-driven selfcal loop; and
+de-duplicated `aux_scripts/run_sofia.py`'s local SoFiA-invocation helpers into `sofia_engine.py` (which also
+fixed a silent-failure gap — SoFiA exiting 0 on an internal failure now raises instead of continuing).
 
 ## Verification
 

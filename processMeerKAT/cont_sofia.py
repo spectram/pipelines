@@ -47,7 +47,15 @@ def main(args, taskvals):
 
     output_dir = combo_dir
     mask_basename = 'stage{0}'.format(stage)
-    sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, output_dir, mask_basename)
+    #SoFiA parameter overrides distinguishing this pass from the other (S+C kernels,
+    #reliability threshold, which output products get written) -- see default_config.txt's
+    #'sofia_mask_params'/'sofia_final_params' comment. Dict-valued, so read directly rather
+    #than via config_parser.validate_args() (str/int/float/bool only).
+    if final:
+        overrides = taskvals['cont_image'].get('sofia_final_params', {})
+    else:
+        overrides = taskvals['cont_image'].get('sofia_mask_params', {})
+    sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, output_dir, mask_basename, overrides=overrides)
 
     stage = 0 if final else stage + 1
     config_parser.overwrite_config(args['config'], conf_dict={'stage': stage}, conf_sec='cont_image', sec_comment='# Internal variables for pipeline execution')
