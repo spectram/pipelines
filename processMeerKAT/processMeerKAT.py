@@ -415,7 +415,8 @@ def parse_args():
     parser.add_argument("-P","--dopol", action="store_true", required=False, default=False, help="Perform polarization calibration in the pipeline [default: False].")
     parser.add_argument("-2","--do2GC", action="store_true", required=False, default=False, help="Perform (2GC) self-calibration in the pipeline [default: False].")
     parser.add_argument("-I","--science_image", action="store_true", required=False, default=False, help="Create a science image [default: False].")
-    parser.add_argument("-H","--hi_image", action="store_true", required=False, default=False, help="Create an HI (spectral-line) cube image, independent of [-I --science_image] -- both can be set together [default: False].")
+    parser.add_argument("-H","--hi_image", action="store_true", required=False, default=False, help="Create an HI (spectral-line) cube image, independent of [-I --science_image] -- both can be set together [default: False]. When set, [crosscal] nspw defaults to 1 (no SPW-splitting) instead of default_config.txt's multi-band continuum default.")
+    parser.add_argument("-F","--centralspw", metavar="MHz", required=False, type=float, default=None, help="Central frequency (MHz) to define a +-10MHz [crosscal] spw window around (spw='*:(F-10)~(F+10)MHz'), e.g. for centring on a redshifted HI line. Only applied when [-H --hi_image] is also set -- ignored (with a warning) otherwise [default: None, i.e. fall back to default_config.txt's spw, clamped to the input MS's own bounds by read_ms.py].")
     parser.add_argument("--contsub", action="store_true", required=False, default=False, help="Run uvsub.py/uvcontsub.py to produce continuum-subtracted visibilities, independent of [-H --hi_image] (e.g. for contsub'd data without full cube imaging) [default: False].")
     parser.add_argument("-x","--nofields", action="store_true", required=False, default=False, help="Do not read the input MS to extract field IDs [default: False].")
     parser.add_argument("-j","--justrun", action="store_true", required=False, default=False, help="Just run the pipeline, don't rebuild each job script if it exists [default: False].")
@@ -1510,6 +1511,22 @@ def default_config(arg_dict):
                    if script_registry.get_properties(s[0]).pipeline_role not in remove_roles]
 
         config_parser.overwrite_config(filename, conf_dict={'postcal_scripts' : scripts}, conf_sec='slurm')
+
+    #default_config.txt's shipped [crosscal] spw/nspw are tuned for a full multi-band
+    #continuum observation (a broad multi-range spw, nspw=11 for parallelism across those
+    #ranges) -- neither suits a narrow-band HI/spectral-line observation. -H defaults nspw to
+    #1 (no SPW-splitting; HI observations are typically a single already-narrow band) and, if
+    #the user also gives [-F --centralspw], overwrites spw to a +-10MHz window centred on it.
+    #Set *before* read_ms.py runs below, so its own check_spw() clamp (against the real MS's
+    #bounds) still applies as a safety net on top of this.
+    if arg_dict['hi_image']:
+        config_parser.overwrite_config(filename, conf_dict={'nspw' : 1}, conf_sec='crosscal')
+        if arg_dict['centralspw'] is not None:
+            low = round(arg_dict['centralspw'] - 10, 4)
+            high = round(arg_dict['centralspw'] + 10, 4)
+            config_parser.overwrite_config(filename, conf_dict={'spw' : "'*:{0}~{1}MHz'".format(low, high)}, conf_sec='crosscal')
+    elif arg_dict['centralspw'] is not None:
+        logger.warning("[-F --centralspw] was set but [-H --hi_image] wasn't -- ignoring, since it only defines the spw window for HI cube imaging.")
 
     if not arg_dict['nofields']:
         #Don't call srun if option --local used
