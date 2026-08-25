@@ -395,6 +395,7 @@ def parse_args():
     parser.add_argument("-P","--dopol", action="store_true", required=False, default=False, help="Perform polarization calibration in the pipeline [default: False].")
     parser.add_argument("-2","--do2GC", action="store_true", required=False, default=False, help="Perform (2GC) self-calibration in the pipeline [default: False].")
     parser.add_argument("-I","--science_image", action="store_true", required=False, default=False, help="Create a science image [default: False].")
+    parser.add_argument("-H","--hi_image", action="store_true", required=False, default=False, help="Create an HI (spectral-line) cube image, independent of [-I --science_image] -- both can be set together [default: False].")
     parser.add_argument("-x","--nofields", action="store_true", required=False, default=False, help="Do not read the input MS to extract field IDs [default: False].")
     parser.add_argument("-j","--justrun", action="store_true", required=False, default=False, help="Just run the pipeline, don't rebuild each job script if it exists [default: False].")
 
@@ -1323,7 +1324,7 @@ def default_config(arg_dict):
     config_parser.overwrite_config(filename, conf_dict={'vis' : "'{0}'".format(MS)}, conf_sec='data')
     config_parser.overwrite_config(filename, conf_dict={'dopol' : arg_dict['dopol']}, conf_sec='run', sec_comment='# Internal variables for pipeline execution')
 
-    if not arg_dict['do2GC'] or not arg_dict['science_image']:
+    if not arg_dict['do2GC'] or not arg_dict['science_image'] or not arg_dict['hi_image']:
         #Roles to drop from postcal_scripts, keyed by declared pipeline_role rather than
         #literal filename -- same pattern as write_master()/write_spw_master()'s has_role()
         #(ed18bb7) and format_args()'s selfcal-present check (0e3c9ef).
@@ -1334,6 +1335,16 @@ def default_config(arg_dict):
         if not arg_dict['science_image']:
             config_parser.remove_section(filename, 'image')
             remove_roles.add('science_image')
+        if not arg_dict['hi_image']:
+            #Phase 6 (not yet implemented -- see REFACTOR_PLAN.md) doesn't have a script_registry
+            #entry with this role yet, so this is a no-op today; Phase 6's new m2h0/mask/m2h1
+            #scripts should be tagged pipeline_role='hi_image' (or this set extended to match
+            #whatever role name(s) it actually introduces) so -H's gate picks them up. -I and -H
+            #are independent (both can run together -- continuum self-cal imaging + separate HI
+            #cube imaging in one pass), so this doesn't touch the 'image'/'science_image' removal
+            #above. 'hi_image' config section removal deliberately omitted here too, for the same
+            #reason: that section doesn't exist yet.
+            remove_roles.add('hi_image')
 
         scripts = [s for s in arg_dict['postcal_scripts']
                    if script_registry.get_properties(s[0]).pipeline_role not in remove_roles]

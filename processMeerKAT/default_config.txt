@@ -111,7 +111,7 @@ multiscale = [0, 5, 10, 15]
 nterms = 2                        # Number of taylor terms
 gridder = 'wproject'
 deconvolver = 'multiscale'
-specmode = 'cube'                 # 'mfs' for continuum image, 'cube' for spectral-line image
+specmode = 'mfs'                  # 'mfs' for continuum image, 'cube' for spectral-line image -- HI cube imaging is Phase 6's separate [hi_image] pipeline, not this section, now that -H/-I are independent
 uvtaper = ''
 restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH)
 fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub, and SPW to select for imaging when specmode='cube'
