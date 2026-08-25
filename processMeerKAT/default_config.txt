@@ -26,7 +26,7 @@ reservation = ''
 modules = ['singularity/4.1.0-mpi']
 verbose = False
 precal_scripts = [('calc_refant.py',False,''), ('partition.py',True,'')]
-postcal_scripts = [('concat.py',False,''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py',True,''), ('selfcal_part2.py',False,''), ('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', False, '')]
+postcal_scripts = [('concat.py',False,''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py',True,''), ('selfcal_part2.py',False,''), ('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('hi_image.py', False, ''), ('hi_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('science_image.py', False, ''), ('cont_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif')]
 scripts = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
@@ -99,31 +99,67 @@ outlier_threshold = 0.0           # S/N values if >= 1.0, otherwise Jy
 outlier_radius = 0.0              # Radius in degrees for identifying outliers in RACS
 atrous_do = True
 flag_maxsize_bm = 30.0
+pb_correct = False                # Apply katbeam PB-correction (image_engine.do_pb_corr(), shared with [cont_image]/[hi_image]) to the final loop's own image? Off by default -- see REFACTOR_PLAN.md's Phase 6 write-up
+pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
+pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"
 
-[image]
+[cont_image]                      # Continuum imaging (was [image]/science_image.py's fixed single-pass; Phase 6 of the Pawsey refactor made this stage-list-driven, matching [hi_image]'s shape, and renamed to make explicit it's the continuum-specific counterpart to [hi_image])
+vis = ''                          # Path to MS to image. '' means use this run's own [data] vis (today's behaviour) -- set explicitly to image an independently-provided/concatenated MS instead.
+# Continuum imaging stage list: one dict per stage. 'mask'=None or 'prev' (SoFiA island
+# mask from the immediately preceding stage's image). The last stage is implicitly
+# "final": gets optional rebin/PB-correction/export, then one final SoFiA source-finding
+# pass; every earlier stage gets a plain SoFiA masking pass feeding the next stage.
+stages = [{'mask': None, 'niter': 10000, 'threshold': '1mJy'},
+          {'mask': 'prev', 'niter': 50000, 'threshold': '0.2mJy'}]
 cell = '2arcsec'
-robust = 0.0
 imsize = [2048, 2048]
-wprojplanes = 128
-niter = 50000
-threshold = '0.2mJy'              # S/N value if >= 1.0 and rmsmap != '', otherwise Jy
-multiscale = [0, 5, 10, 15]
-nterms = 2                        # Number of taylor terms
-gridder = 'wproject'
-deconvolver = 'multiscale'
-specmode = 'mfs'                  # 'mfs' for continuum image, 'cube' for spectral-line image -- HI cube imaging is Phase 6's separate [hi_image] pipeline, not this section, now that -H/-I are independent
+robust = 0.0
 uvtaper = ''
-restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH)
-fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub, and SPW to select for imaging when specmode='cube'
-imspw = ''
+scales = [0, 5, 10, 15]
+gridder = 'wproject'
+wprojplanes = 128
+deconvolver = 'multiscale'
+weighting = 'briggs'
+nterms = 2                        # Number of taylor terms (use deconvolver='mtmfs' for a true multi-term continuum fit)
+specmode = 'mfs'                  # 'mfs' or 'mtmfs' for continuum -- HI cube imaging is the separate [hi_image] pipeline
+restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH) -- also reused by [hi_image]
+fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub
+imspw = ''                        # SPW to select for imaging -- also reused by [hi_image]
 fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub
 restoringbeam = ''
 stokes = 'I'
+rebin = False                     # Rebin the final stage's image before export?
+rebin_factor = [2, 2, 1]          # imrebin() factor, only used when rebin=True
+pb_correct = False                # Apply katbeam PB-correction to the final stage's image before export?
 pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
 pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"
-mask = ''
-rmsmap = ''
 outlierfile = ''
+combo = 0                         # Internal: unused for [cont_image] (no combo axis, unlike [hi_image]) -- reserved for consistency
+stage = 0                         # Internal: current stage index in 'stages', advanced by cont_sofia.py
+
+[hi_image]                        # HI (spectral-line) cube imaging -- Phase 6 of the Pawsey refactor (see REFACTOR_PLAN.md). Images [run] hi_contsub_vis (uvcontsub.py's output, gated on -H/--contsub), not [data] vis.
+# Weighting combinations to image, one dict per combination -- the *entire* stage chain
+# below runs independently for each entry (no mask-sharing across combos). Compare
+# sensitivity/resolution trade-offs by adding more entries.
+hi_combos = [{'robust': 1.0, 'uvtaper': ''}]
+# HI cube imaging stage list -- same shape/semantics as [cont_image]'s 'stages' (see its
+# comment above). Defaults ported from the m2-image-scripts prototype (origin/HI-dev).
+stages = [{'mask': None, 'niter': 50000, 'threshold': '0.6mJy'},
+          {'mask': 'prev', 'niter': 1500000, 'threshold': '0.24mJy'}]
+cell = '2.0arcsec'
+imsize = [2048, 2048]
+scales = [0, 3, 5, 10]
+gridder = 'wproject'
+wprojplanes = 256
+deconvolver = 'multiscale'
+weighting = 'briggs'
+rebin = False                     # Rebin the final stage's cube before export?
+rebin_factor = [2, 2, 1]          # imrebin() factor, only used when rebin=True
+pb_correct = False                # Apply katbeam PB-correction to the final stage's cube before export?
+pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
+pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"
+combo = 0                         # Internal: current index into 'hi_combos', advanced by hi_sofia.py
+stage = 0                         # Internal: current stage index in 'stages' (reset to 0 when 'combo' advances), advanced by hi_sofia.py
 
 [run]                             # Internal variables for pipeline execution
 continue = True

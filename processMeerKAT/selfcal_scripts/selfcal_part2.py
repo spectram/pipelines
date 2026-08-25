@@ -36,7 +36,7 @@ logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=lo
 
 def selfcal_part2(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplanes, uvrange,
                   nterms, gridder, deconvolver, discard_nloops, gaintype, outlier_threshold, outlier_radius, flag,\
-                      atrous_do,flag_maxsize_bm, scales, usermask):
+                      atrous_do,flag_maxsize_bm, scales, usermask, pb_correct=False, pbthreshold=0.1, pbband='LBand'):
 
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,_,_,_,_ = \
         bookkeeping.get_selfcal_args(vis,loop,stages,nterms,deconvolver,discard_nloops,outlier_threshold,\
@@ -107,7 +107,7 @@ def pybdsf(imbase,rmsfile,imagename,outimage,thresh,maskfile,cat,\
 
 def find_outliers(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplanes, uvrange, nterms,
                   gridder, deconvolver, discard_nloops, gaintype, outlier_threshold, outlier_radius,\
-                      flag, atrous_do, flag_maxsize_bm, step, usermask, scales):
+                      flag, atrous_do, flag_maxsize_bm, step, usermask, scales, pb_correct=False, pbthreshold=0.1, pbband='LBand'):
 
     local = locals()
     local.pop('step')
@@ -369,7 +369,8 @@ def find_outliers(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojp
 
 def mask_image(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplanes, uvrange, nterms, gridder,
                   deconvolver, discard_nloops, gaintype, outlier_threshold, \
-                      outlier_radius, flag, atrous_do, flag_maxsize_bm, scales, usermask, outlier_base='', outlier_image=''):
+                      outlier_radius, flag, atrous_do, flag_maxsize_bm, scales, usermask, outlier_base='', outlier_image='',
+                      pb_correct=False, pbthreshold=0.1, pbband='LBand'):
 
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,thresh,maskfile,_,_ = bookkeeping.get_selfcal_args(vis,loop,stages,nterms,\
         deconvolver,discard_nloops,outlier_threshold,outlier_radius,usermask=usermask,step='mask')
@@ -412,6 +413,15 @@ def mask_image(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplan
             if os.path.exists(im):
                 shutil.rmtree(im)
 
+    #Phase 6 (Pawsey refactor): optionally PB-correct the final loop's own image directly
+    #(reusing image_engine.do_pb_corr(), the same katbeam-based correction science_image.py/
+    #hi_image.py use), so the final selfcal loop's output is science-ready without a
+    #separate science_image.py run. Off by default -- see REFACTOR_PLAN.md's Phase 6
+    #write-up.
+    if loop == selfcal_stages.nloops(stages) and pb_correct:
+        import image_engine
+        image_engine.do_pb_corr(outimage, pbthreshold, pbband)
+
     return pixmask
 
 if __name__ == '__main__':
@@ -426,11 +436,11 @@ if __name__ == '__main__':
     loop += 1
     config_parser.overwrite_config(args['config'], conf_dict={'loop' : loop},  conf_sec='selfcal')
 
-    if config_parser.has_section(args['config'], 'image'):
-        if config_parser.get_key(args['config'], 'image', 'specmode') != 'cube':
-            # Don't copy over continuum mask for cube-mode science imagin; allow for 3D mask (e.g. SoFiA)
-            config_parser.overwrite_config(args['config'], conf_dict={'mask' : "'{0}'".format(pixmask)}, conf_sec='image')
-        config_parser.overwrite_config(args['config'], conf_dict={'rmsmap' : "'{0}'".format(rmsmap)}, conf_sec='image')
-        config_parser.overwrite_config(args['config'], conf_dict={'outlierfile' : "'{0}'".format(outlierfile)}, conf_sec='image')
+    #Phase 6 (Pawsey refactor): [image] was renamed [cont_image] and no longer takes a
+    #plain 'mask'/'rmsmap' scalar -- [cont_image] now derives its own per-stage mask via
+    #its own SoFiA passes (see image_stages.py/science_image.py), independent of selfcal's
+    #own mask. Only 'outlierfile' still applies.
+    if config_parser.has_section(args['config'], 'cont_image'):
+        config_parser.overwrite_config(args['config'], conf_dict={'outlierfile' : "'{0}'".format(outlierfile)}, conf_sec='cont_image')
 
     bookkeeping.rename_logs(logfile)

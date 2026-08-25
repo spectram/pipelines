@@ -95,6 +95,12 @@ REGISTRY = {
     'uvsub.py':          ScriptProperties(pipeline_role='uvsub'),
     'uvcontsub.py':      ScriptProperties(requires_mms=True, pipeline_role='uvcontsub'),
     'science_image.py':  ScriptProperties(cpu_intensive=True, long_running=True, long_partition=True, pipeline_role='science_image'),
+    #Phase 6 (Pawsey refactor): HI cube imaging + continuum imaging's own SoFiA-driven
+    #stage chain -- see image_stages.py/image_engine.py/sofia_engine.py and
+    #REFACTOR_PLAN.md's Phase 6 write-up.
+    'hi_image.py':        ScriptProperties(cpu_intensive=True, long_running=True, long_partition=True, pipeline_role='hi_image'),
+    'hi_sofia.py':         ScriptProperties(pipeline_role='hi_sofia'),
+    'cont_sofia.py':      ScriptProperties(pipeline_role='cont_sofia'),
 }
 
 

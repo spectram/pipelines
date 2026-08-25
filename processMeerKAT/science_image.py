@@ -1,13 +1,24 @@
 #Copyright (C) 2022 Inter-University Institute for Data Intensive Astronomy
 #See processMeerKAT.py for license details.
 
+"""Continuum imaging entry point ([cont_image]) -- see "Phase 6" in REFACTOR_PLAN.md. Thin
+wrapper around `image_engine.py`'s shared tclean/PB-correction/export logic and
+`image_stages.py`'s stage-list resolution, matching `hi_image.py`'s pattern exactly (a
+stage-list-driven, SoFiA-masked chain rather than the single fixed tclean call this script
+used to make); paired with `cont_sofia.py` the same way `hi_image.py` is paired with
+`hi_sofia.py`. Kept as this filename (and `-I`/`pipeline_role='science_image'`) for
+continuity -- too embedded elsewhere to rename."""
+
 import os
-import numpy as np
+import sys
 
 import config_parser
+from config_parser import validate_args as va
 import bookkeeping
+import image_stages
+import image_engine
 
-from casatasks import *
+from casatasks import exportfits, casalog
 logfile=casalog.logfile()
 casalog.setlogfile('logs/{SLURM_JOB_NAME}-{SLURM_JOB_ID}.casa'.format(**os.environ))
 import casampi
@@ -16,145 +27,81 @@ import logging
 from time import gmtime
 logging.Formatter.converter = gmtime
 logger = logging.getLogger(__name__)
-logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s")
-
-import shutil
-from katbeam import JimBeam
-from casatools import image
-ia = image()
+logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=logging.INFO)
 
 
-def do_pb_corr(inpimage, pbthreshold=0, pbband='LBand'):
-    """
-    Given the input CASA image, outputs a katbeam corrected image, optionally
-    cutoff at a specified threshold.
+def main(args, taskvals):
 
-    Inputs:
-    inpimage        Input CASA image name, str
-    pbthreshold     Cutoff threshold to mask the PB, float
-    pbband          Band at which to generate the PB
+    vis = va(taskvals, 'cont_image', 'vis', str, default='')
+    if vis == '':
+        vis = va(taskvals, 'data', 'vis', str)
 
-    Outputs:
-    None
-    """
+    try:
+        #'stages'/'imsize'/'scales' are lists -- config_parser.validate_args() only
+        #supports str/int/float/bool, so read these directly.
+        stages = image_stages.parse_stages(taskvals['cont_image']['stages'])
+    except ValueError as err:
+        logger.error("Invalid 'stages' in '{0}': {1}".format(args['config'], err))
+        sys.exit(1)
 
-    pbcorimage = inpimage.replace('.image', '.katbeam_pbcor.image')
-    pbimage = inpimage.replace('.image', '.katbeam.pb')
+    stage = va(taskvals, 'cont_image', 'stage', int, default=0)
 
-    ia.open(inpimage)
-    csys = ia.coordsys().torecord()
-    imgdata = ia.getchunk()
-    shape = ia.shape()
-
-    cx, cy = shape[0]//2, shape[1]//2
-
-    # Size of each pixel
-    cdelt = np.abs(csys['direction0']['cdelt'][0])
-    unit = csys['direction0']['units'][0]
-
-    if unit == 'rad':
-        cdelt = np.rad2deg(cdelt)
-    elif unit == "'": #arcmin
-        cdelt /= 60.
-
-    if pbband == 'LBand':
-        PBeam = JimBeam('MKAT-AA-L-JIM-2020')
-    elif pbband == 'SBand':
-        PBeam = JimBeam('MKAT-AA-S-JIM-2020')
-    elif pbband == 'UHF':
-        PBeam = JimBeam('MKAT-AA-UHF-JIM-2020')
-    else:
-        logger.error('Input pbband not recognized. Must be one of LBand, SBand or UHF. Defaulting to LBand.')
-        PBeam = JimBeam('MKAT-AA-L-JIM-2020')
-
-    x = np.linspace(-cx, cx+1, shape[0])
-    y = np.linspace(-cy, cy+1, shape[1])
-
-    xx, yy = np.meshgrid(x, y)
-
-    # Convert pixels into separation in degrees
-    xx *= cdelt
-    yy *= cdelt
-
-    # Generate the PB image/cube
-    beam_I = np.empty(shape)
-    for i in range(shape[-1]):
-        beam_I[:,:,0,i] = PBeam.I(xx, yy, (ia.toworld([0,0,0,i])['numeric'][-1])/1e6)
-
-    ia.close()
-
-    pbcor_imgdata = imgdata/beam_I
-
-    # Mask below the threshold
-    if pbthreshold > 0:
-        pbcor_imgdata[beam_I < pbthreshold] = np.nan
-        #beam_I[beam_I < pbthreshold] = np.nan
-
-    shutil.copytree(inpimage, pbimage)
-    ia.open(pbimage)
-    ia.putchunk(beam_I)
-    ia.close()
-
-    shutil.copytree(inpimage, pbcorimage)
-    ia.open(pbcorimage)
-    ia.putchunk(pbcor_imgdata)
-    ia.close()
-
-
-def science_image(vis, spw, cell, robust, imsize, wprojplanes, niter, threshold, multiscale, nterms, \
-    gridder, deconvolver, specmode, uvtaper, restfreq, restoringbeam, stokes, mask, rmsmap, outlierfile, \
-        keepmms, pbthreshold, pbband, fitspw, imspw):
-
-    visbase = os.path.split(vis.rstrip('/ '))[1] # Get only vis name, not entire path
-    extn = '.ms' if keepmms==False else '.mms'
-    imagename = visbase.replace(extn, '.science_image') # Images will be produced in $CWD
-
+    imsize = taskvals['cont_image']['imsize']
+    cell = va(taskvals, 'cont_image', 'cell', str)
+    robust = va(taskvals, 'cont_image', 'robust', float)
+    uvtaper = va(taskvals, 'cont_image', 'uvtaper', str)
+    scales = taskvals['cont_image']['scales']
+    gridder = va(taskvals, 'cont_image', 'gridder', str)
+    wprojplanes = va(taskvals, 'cont_image', 'wprojplanes', int)
+    deconvolver = va(taskvals, 'cont_image', 'deconvolver', str)
+    weighting = va(taskvals, 'cont_image', 'weighting', str)
+    nterms = va(taskvals, 'cont_image', 'nterms', int)
+    specmode = va(taskvals, 'cont_image', 'specmode', str)
+    restfreq = va(taskvals, 'cont_image', 'restfreq', str)
+    imspw = va(taskvals, 'cont_image', 'imspw', str)
+    restoringbeam = va(taskvals, 'cont_image', 'restoringbeam', str)
+    stokes = va(taskvals, 'cont_image', 'stokes', str)
+    outlierfile = va(taskvals, 'cont_image', 'outlierfile', str)
     if os.path.exists(outlierfile) and open(outlierfile).read() == '':
         outlierfile = ''
 
-    if not (type(threshold) is str and 'Jy' in threshold) and threshold > 1 and os.path.exists(rmsmap):
-        stats = imstat(imagename=rmsmap)
-        threshold *= stats['min'][0]
+    logger.info('Continuum imaging stage {0}/{1}.'.format(stage, len(stages)-1))
 
-    if deconvolver == 'mtmfs':
-        imname = imagename + '.image.tt0'
+    combo_dir = 'cont_image'
+    os.makedirs(combo_dir, exist_ok=True)
+    imagename_fn = lambda s: os.path.join(combo_dir, 'stage{0}'.format(s))
+    imagename = imagename_fn(stage)
+
+    mask = image_stages.resolve_mask(stages, stage, imagename_fn)
+
+    outimage = image_engine.run_stage(vis=vis, imagename=imagename, mask=mask,
+        niter=stages[stage].niter, threshold=stages[stage].threshold,
+        imsize=imsize, cell=cell, robust=robust, uvtaper=uvtaper, scales=scales,
+        gridder=gridder, wprojplanes=wprojplanes, deconvolver=deconvolver,
+        weighting=weighting, specmode=specmode, restfreq=restfreq, spw=imspw,
+        nterms=nterms, stokes=stokes, restoringbeam=restoringbeam, outlierfile=outlierfile)
+
+    if image_stages.is_final(stages, stage):
+        rebin = va(taskvals, 'cont_image', 'rebin', bool, default=False)
+        rebin_factor = taskvals['cont_image'].get('rebin_factor', [2, 2, 1])
+        pb_correct = va(taskvals, 'cont_image', 'pb_correct', bool, default=False)
+        pbthreshold = va(taskvals, 'cont_image', 'pbthreshold', float, default=0)
+        pbband = va(taskvals, 'cont_image', 'pbband', str, default='LBand')
+
+        export_dir = os.path.join(combo_dir, 'fincubes')
+        exported = image_engine.finalize_stage(outimage, export_dir, rebin=rebin, rebin_factor=rebin_factor,
+            pb_correct=pb_correct, pbthreshold=pbthreshold, pbband=pbband)
+
+        #cont_sofia.py's final pass reads this to know what to source-find on.
+        config_parser.overwrite_config(args['config'], conf_dict={'final_export': "'{0}'".format(exported)}, conf_sec='cont_image', sec_comment='# Internal variables for pipeline execution')
     else:
-        imname = imagename + '.image'
+        #cont_sofia.py's masking pass needs a FITS input, but runs in the SoFiA-only
+        #container (no CASA) -- export here, on the CASA side.
+        fitsimage = imagename + '.fits'
+        if not os.path.exists(fitsimage):
+            exportfits(imagename=outimage, fitsimage=fitsimage, overwrite=True, dropdeg=True, dropstokes=True)
 
-    #Disable parallel processing if cube imaging being done (CASA bug)
-    parallel = True
-    if specmode == 'cube':
-        parallel = False
-        if imspw != '':
-            spw = imspw
-
-    if not os.path.exists(imname):
-
-        tclean(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
-            imsize=imsize, cell=cell, stokes=stokes, gridder=gridder, specmode=specmode,
-            wprojplanes = wprojplanes, deconvolver = deconvolver, restoration=True,
-            weighting='briggs', robust = robust, niter=niter, scales=multiscale,
-            restfreq=restfreq, uvtaper = uvtaper, spw=spw,
-            threshold=threshold, nterms=nterms, calcpsf=True, mask=mask, outlierfile=outlierfile,
-            pbcor=False, pblimit=-1, restoringbeam=restoringbeam, parallel = parallel)
-
-    else:
-        logger.warning('Output image "{0}" already exists. Skipping tclean step and applying pb correction.'.format(imname))
-
-    if len(stokes) > 1 and 'I' in stokes.upper():
-        logger.warning('Output image "{0}" includes multiple Stokes, but katbeam only applicable to Stokes I. Selecting Stokes I and applying PB correction.'.format(imname))
-        stokesI = imname + '.StokesI'
-        if not os.path.exists(stokesI):
-            imsubimage(imagename=imname, outfile=stokesI, stokes='I')
-        imname = stokesI
-
-    if 'I' in stokes.upper():
-        do_pb_corr(imname, pbthreshold, pbband)
 
 if __name__ == '__main__':
 
-    args,params = bookkeeping.get_imaging_params()
-    params['fitspw'] = config_parser.get_key(args['config'], "image", "fitspw")
-    params['imspw'] = config_parser.get_key(args['config'], "image", "imspw")
-    science_image(**params)
-    bookkeeping.rename_logs(logfile)
+    bookkeeping.run_script(main, logfile)

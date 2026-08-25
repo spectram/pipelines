@@ -73,8 +73,29 @@ IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes uvsub.sbatch | c
 #uvcontsub.sbatch
 IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes uvcontsub.sbatch | cut -d ' ' -f4)
 
+#hi_image.sbatch
+IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes hi_image.sbatch | cut -d ' ' -f4)
+
+#hi_sofia.sbatch
+IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes hi_sofia.sbatch | cut -d ' ' -f4)
+
+#hi_image.sbatch
+IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes hi_image.sbatch | cut -d ' ' -f4)
+
+#hi_sofia.sbatch
+IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes hi_sofia.sbatch | cut -d ' ' -f4)
+
 #science_image.sbatch
 IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes science_image.sbatch | cut -d ' ' -f4)
+
+#cont_sofia.sbatch
+IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes cont_sofia.sbatch | cut -d ' ' -f4)
+
+#science_image.sbatch
+IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes science_image.sbatch | cut -d ' ' -f4)
+
+#cont_sofia.sbatch
+IDs+=,$(sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes cont_sofia.sbatch | cut -d ' ' -f4)
 
 #Output message and create jobScripts directory
 echo Submitted sbatch jobs with following IDs: $IDs

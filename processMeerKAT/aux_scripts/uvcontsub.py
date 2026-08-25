@@ -60,8 +60,8 @@ def do_uvcontsub(vis,fitspw,fitorder):
 def main(args,taskvals):
 
     visname = va(taskvals, "data", "vis", str)
-    fitspw = va(taskvals, "image", "fitspw", str)
-    fitorder = va(taskvals, "image", "fitorder", int)
+    fitspw = va(taskvals, "cont_image", "fitspw", str)
+    fitorder = va(taskvals, "cont_image", "fitorder", int)
 
     outputvis,continuum_vis = do_uvcontsub(visname,fitspw,fitorder)
 

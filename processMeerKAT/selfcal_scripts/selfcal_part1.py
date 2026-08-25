@@ -24,7 +24,7 @@ logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=lo
 
 def selfcal_part1(vis, refant, dopol, stages, loop, cell, robust, imsize, wprojplanes, uvrange, nterms,
                   gridder, deconvolver, discard_nloops, gaintype, outlier_threshold, outlier_radius, flag, \
-                      atrous_do,flag_maxsize_bm, scales, usermask):
+                      atrous_do,flag_maxsize_bm, scales, usermask, pb_correct=False, pbthreshold=0.1, pbband='LBand'):
 
     imbase,imagename,outimage,pixmask,rmsfile,caltable,prev_caltables,threshold,outlierfile,cfcache,_,_,_,_ = bookkeeping.get_selfcal_args(vis,loop,stages,nterms,\
         deconvolver,discard_nloops,outlier_threshold,outlier_radius,usermask=usermask,step='tclean')

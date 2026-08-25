@@ -342,34 +342,6 @@ def rename_logs(logfile=''):
         for log in glob.glob('*.last'):
             os.rename(log,'logs/{0}-{1}.last'.format(os.path.splitext(log)[0],IDs))
 
-def get_imaging_params():
-
-    # Get the name of the config file
-    args = config_parser.parse_args()
-
-    # Parse config file
-    taskvals, config = config_parser.parse_config(args['config'])
-    params = taskvals['image']
-    params['vis'] = taskvals['data']['vis']
-    params['keepmms'] = taskvals['crosscal']['keepmms']
-    params['spw'] = taskvals['crosscal']['spw']
-    params.pop('fitspw')
-    params.pop('fitorder')
-    params.pop('imspw')
-
-    #Rename the masks that were already used
-    if params['outlierfile'] != '' and os.path.exists(params['outlierfile']):
-        outliers=open(params['outlierfile']).read()
-        outlier_bases = re.findall(r'imagename=(.*)\n',outliers)
-        for name in outlier_bases:
-            mask = '{0}.mask'.format(name)
-            if os.path.exists(mask):
-                newname = '{0}.old'.format(mask)
-                logger.info('Re-using old mask for "{0}". Renaming "{1}" to "{2}" to avoid mask conflict.'.format(name,mask,newname))
-                os.rename(mask,newname)
-
-    return args,params
-
 def run_script(func,logfile=''):
 
     # Get the name of the config file

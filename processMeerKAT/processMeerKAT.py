@@ -89,8 +89,17 @@ CROSSCAL_CONFIG_KEYS = ['minbaselines','chanbin','width','timeavg','createmms','
 #Phase 2 write-up. Every other key here stays a plain, non-broadcast scalar (or list, e.g.
 #imsize=[6144,6144]) -- bookkeeping.get_selfcal_params() no longer replicates any of them
 #to an 'nloops'+1-long list.
-SELFCAL_CONFIG_KEYS = ['stages','loop','cell','robust','imsize','wprojplanes','uvrange','nterms','gridder','deconvolver','discard_nloops','gaintype','outlier_threshold','flag','outlier_radius', 'atrous_do','flag_maxsize_bm','scales','usermask']
-IMAGING_CONFIG_KEYS = ['cell', 'robust', 'imsize', 'wprojplanes', 'niter', 'threshold', 'multiscale', 'nterms', 'gridder', 'deconvolver', 'specmode', 'uvtaper', 'restfreq', 'fitspw', 'fitorder', 'restoringbeam', 'stokes', 'mask', 'rmsmap','outlierfile', 'pbthreshold', 'pbband','imspw']
+SELFCAL_CONFIG_KEYS = ['stages','loop','cell','robust','imsize','wprojplanes','uvrange','nterms','gridder','deconvolver','discard_nloops','gaintype','outlier_threshold','flag','outlier_radius', 'atrous_do','flag_maxsize_bm','scales','usermask','pb_correct','pbthreshold','pbband']
+#Phase 6 (Pawsey refactor): '[image]' renamed '[cont_image]' and given the same
+#'stages'-list shape as '[hi_image]' (replacing the old flat 'niter'/'threshold'/'mask'
+#scalars) -- see image_stages.py and REFACTOR_PLAN.md's Phase 6 write-up.
+CONT_IMAGE_CONFIG_KEYS = ['vis','stages','cell','imsize','robust','uvtaper','scales','gridder','wprojplanes','deconvolver','weighting','nterms','specmode','restfreq','fitspw','fitorder','imspw','restoringbeam','stokes','rebin','rebin_factor','pb_correct','pbthreshold','pbband','outlierfile','combo','stage']
+#New in Phase 6: HI cube imaging, images '[run] hi_contsub_vis' (uvcontsub.py's output) via
+#a 'stages' list (image_stages.py) crossed with 'hi_combos' (one entry per robust/uvtaper
+#weighting combination to image, each getting the full stage chain independently -- see
+#REFACTOR_PLAN.md's Phase 6 addendum). 'restfreq'/'imspw' are deliberately not duplicated
+#here -- reused directly from '[cont_image]'.
+HI_IMAGE_CONFIG_KEYS = ['hi_combos','stages','cell','imsize','scales','gridder','wprojplanes','deconvolver','weighting','rebin','rebin_factor','pb_correct','pbthreshold','pbband','combo','stage']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
 
@@ -860,6 +869,105 @@ def expand_selfcal_loop_scripts(scripts,config,handle_run_sofia=False):
         init_scripts.append(part1_name)
     return init_scripts + final_scripts
 
+def _expand_stage_pair_scripts(scripts,config,section,image_role,sofia_role,ncombos=1):
+
+    """Shared by `expand_hi_combo_scripts()`/`expand_cont_image_stage_scripts()`: replicate
+    a configured `<image_role>.sbatch`/`<sofia_role>.sbatch` pair 'nstages * ncombos' times,
+    accounting for already-progressed 'combo'/'stage' state -- the imaging equivalent of
+    `expand_selfcal_loop_scripts()`. Unlike that function, every stage (including the last)
+    needs the full pair (its own SoFiA pass, masking or final), so this is a flat replace
+    rather than an 'initial + N more, +1 special-cased final' expansion.
+
+    Arguments:
+    ----------
+    scripts : list (of str)
+        List of '<script>.sbatch' filenames.
+    config : str
+        Path to config file.
+    section : str
+        Config section ('hi_image' or 'cont_image') holding 'stages'/'combo'/'stage' (and
+        'hi_combos' for 'hi_image').
+    image_role, sofia_role : str
+        `pipeline_role` values identifying the imaging/SoFiA script pair.
+    ncombos : int, optional
+        Number of combos to cross with 'stages' (1 for 'cont_image', which has no combo
+        axis).
+
+    Returns:
+    --------
+    scripts : list (of str)
+        The (possibly expanded) script list."""
+
+    def has_role(s,role):
+        return script_registry.get_properties(s).pipeline_role == role
+
+    if not (config_parser.has_section(config,section) and any(has_role(s,image_role) for s in scripts)
+            and any(has_role(s,sofia_role) for s in scripts)):
+        return scripts
+
+    nstages = len(config_parser.get_key(config, section, 'stages'))
+    start_combo = config_parser.get_key(config, section, 'combo')
+    start_stage = config_parser.get_key(config, section, 'stage')
+    total_pairs = nstages * ncombos
+    done_pairs = start_combo * nstages + start_stage
+    remaining_pairs = max(1, total_pairs - done_pairs)
+
+    image_idx = next(i for i,s in enumerate(scripts) if has_role(s,image_role))
+    sofia_idx = next(i for i,s in enumerate(scripts) if has_role(s,sofia_role))
+
+    #check that the pair is adjacent and in order, otherwise don't duplicate scripts
+    if sofia_idx != image_idx + 1:
+        return scripts
+
+    image_name, sofia_name = scripts[image_idx], scripts[sofia_idx]
+    init_scripts = scripts[:image_idx]
+    final_scripts = scripts[sofia_idx+1:]
+    return init_scripts + [image_name,sofia_name]*remaining_pairs + final_scripts
+
+def expand_hi_combo_scripts(scripts,config):
+
+    """Replicate a configured `hi_image.sbatch`/`hi_sofia.sbatch` pair `len(stages) *
+    len(hi_combos)` times, so a single [hi_image.py, hi_sofia.py] pair in the configured
+    scripts list expands into the full per-combo, per-stage HI imaging chain -- see
+    REFACTOR_PLAN.md's Phase 6 addendum and `_expand_stage_pair_scripts()`.
+
+    Arguments:
+    ----------
+    scripts : list (of str)
+        List of '<script>.sbatch' filenames.
+    config : str
+        Path to config file.
+
+    Returns:
+    --------
+    scripts : list (of str)
+        The (possibly expanded) script list."""
+
+    if not config_parser.has_section(config,'hi_image'):
+        return scripts
+    ncombos = len(config_parser.get_key(config, 'hi_image', 'hi_combos'))
+    return _expand_stage_pair_scripts(scripts,config,'hi_image','hi_image','hi_sofia',ncombos=ncombos)
+
+def expand_cont_image_stage_scripts(scripts,config):
+
+    """Replicate a configured `science_image.sbatch`/`cont_sofia.sbatch` pair
+    `len(stages)` times, the continuum-imaging equivalent of `expand_hi_combo_scripts()`
+    (no combo axis -- see `_expand_stage_pair_scripts()`).
+
+    Arguments:
+    ----------
+    scripts : list (of str)
+        List of '<script>.sbatch' filenames.
+    config : str
+        Path to config file.
+
+    Returns:
+    --------
+    scripts : list (of str)
+        The (possibly expanded) script list."""
+
+    return _expand_stage_pair_scripts(scripts,config,'cont_image','science_image','cont_sofia')
+
 def write_spw_master(filename,config,SPWs,precal_scripts,postcal_scripts,submit,dir='jobScripts',pad_length=5,dependencies='',timestamp='',slurm_kwargs={}):
 
     """Write master master script, which separately calls each of the master scripts in each SPW directory.
@@ -950,6 +1058,8 @@ def write_spw_master(filename,config,SPWs,precal_scripts,postcal_scripts,submit,
     if any(script_registry.get_properties(s).pipeline_role == 'concat' for s in postcal_scripts):
         master.write('echo Will concatenate MSs/MMSs and create quick-look continuum cube across all SPWs for all fields from \"{0}\".\n'.format(config))
     scripts = expand_selfcal_loop_scripts(postcal_scripts[:], config)
+    scripts = expand_hi_combo_scripts(scripts, config)
+    scripts = expand_cont_image_stage_scripts(scripts, config)
 
     if len(scripts) > 0:
         command = "sbatch -d afterany:${IDs//,/:}"
@@ -1054,6 +1164,8 @@ def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_le
 
     #Expand a configured selfcal_part1/selfcal_part2 pair into the full loop chain
     scripts = expand_selfcal_loop_scripts(scripts, config, handle_run_sofia=True)
+    scripts = expand_hi_combo_scripts(scripts, config)
+    scripts = expand_cont_image_stage_scripts(scripts, config)
 
     command = 'sbatch'
 
@@ -1339,18 +1451,19 @@ def default_config(arg_dict):
             config_parser.remove_section(filename, 'selfcal')
             remove_roles |= {'selfcal_part1', 'selfcal_part2'}
         if not arg_dict['science_image']:
-            config_parser.remove_section(filename, 'image')
-            remove_roles.add('science_image')
+            #Don't remove '[cont_image]' itself here even though -I is off: hi_image.py
+            #(-H) and uvcontsub.py (-H/--contsub) both reuse '[cont_image]'
+            #restfreq/imspw/fitspw/fitorder regardless of whether continuum imaging itself
+            #is wanted -- only drop the section once nothing needs it at all (below).
+            remove_roles |= {'science_image', 'cont_sofia'}
+        if not arg_dict['science_image'] and not arg_dict['hi_image'] and not want_contsub:
+            config_parser.remove_section(filename, 'cont_image')
         if not arg_dict['hi_image']:
-            #Phase 6 (not yet implemented -- see REFACTOR_PLAN.md) doesn't have a script_registry
-            #entry with this role yet, so this is a no-op today; Phase 6's new m2h0/mask/m2h1
-            #scripts should be tagged pipeline_role='hi_image' (or this set extended to match
-            #whatever role name(s) it actually introduces) so -H's gate picks them up. -I and -H
-            #are independent (both can run together -- continuum self-cal imaging + separate HI
-            #cube imaging in one pass), so this doesn't touch the 'image'/'science_image' removal
-            #above. 'hi_image' config section removal deliberately omitted here too, for the same
-            #reason: that section doesn't exist yet.
-            remove_roles.add('hi_image')
+            #-I and -H are independent (both can run together -- continuum self-cal
+            #imaging + separate HI cube imaging in one pass), so this doesn't touch the
+            #'cont_image'/'science_image' removal above.
+            config_parser.remove_section(filename, 'hi_image')
+            remove_roles |= {'hi_image', 'hi_sofia'}
         if not want_contsub:
             #Previously always ran whenever nspw > 1, regardless of -I/-H (a confirmed bug -- see
             #REFACTOR_PLAN.md's Phase 5 write-up): uvcontsub.py used to overwrite the shared
@@ -1529,12 +1642,19 @@ def format_args(config,submit,quiet,dependencies,justrun):
                 logger.debug('Running following command:\n\t{0}'.format(command))
                 os.system(command)
 
-    if config_parser.has_section(config,'image'):
-        imaging_kwargs = get_config_kwargs(config, 'image', IMAGING_CONFIG_KEYS)
+    if config_parser.has_section(config,'cont_image'):
+        imaging_kwargs = get_config_kwargs(config, 'cont_image', CONT_IMAGE_CONFIG_KEYS)
 
         valid_pbbands = ['LBand', 'SBand', 'UHF']
         if not any([pb.lower() in imaging_kwargs['pbband'].lower() for pb in valid_pbbands]):
             logger.warning('Invalid pbband found. Must be one of {}. If not fixed, will default to LBand.'.format(valid_pbbands))
+
+    if config_parser.has_section(config,'hi_image'):
+        hi_imaging_kwargs = get_config_kwargs(config, 'hi_image', HI_IMAGE_CONFIG_KEYS)
+
+        valid_pbbands = ['LBand', 'SBand', 'UHF']
+        if not any([pb.lower() in hi_imaging_kwargs['pbband'].lower() for pb in valid_pbbands]):
+            logger.warning('Invalid pbband found in [hi_image]. Must be one of {}. If not fixed, will default to LBand.'.format(valid_pbbands))
 
     #If nspw = 1 and precal or postcal scripts present, overwrite config and reload
     if nspw == 1:

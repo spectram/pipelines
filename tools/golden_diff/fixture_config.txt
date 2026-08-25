@@ -27,7 +27,7 @@ modules = ['singularity/4.1.0-mpi']
 verbose = False
 precal_scripts = []
 postcal_scripts = []
-scripts = [('partition.py', True, ''), ('validate_input.py', False, ''), ('flag_round_1.py', True, ''), ('calc_refant.py', False, ''), ('setjy.py', True, ''), ('xx_yy_solve.py', False, ''), ('xx_yy_apply.py', True, ''), ('flag_round_2.py', True, ''), ('xx_yy_solve.py', False, ''), ('xx_yy_apply.py', True, ''), ('split.py', True, ''), ('quick_tclean.py', True, ''), ('concat.py', False, ''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py', True, ''), ('selfcal_part2.py', False, ''), ('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', True, '')]
+scripts = [('partition.py', True, ''), ('validate_input.py', False, ''), ('flag_round_1.py', True, ''), ('calc_refant.py', False, ''), ('setjy.py', True, ''), ('xx_yy_solve.py', False, ''), ('xx_yy_apply.py', True, ''), ('flag_round_2.py', True, ''), ('xx_yy_solve.py', False, ''), ('xx_yy_apply.py', True, ''), ('split.py', True, ''), ('quick_tclean.py', True, ''), ('concat.py', False, ''), ('plotcal_spw.py', False, ''), ('selfcal_part1.py', True, ''), ('selfcal_part2.py', False, ''), ('run_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('hi_image.py', False, ''), ('hi_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'), ('science_image.py', True, ''), ('cont_sofia.py', False, '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif')]
 
 [cluster]
 total_nodes_limit = 1592
@@ -78,31 +78,56 @@ outlier_threshold = 0.0
 outlier_radius = 0.0
 atrous_do = True
 flag_maxsize_bm = 30.0
+pb_correct = False
+pbthreshold = 0.1
+pbband = 'LBand'
 
-[image]
+[cont_image]
+vis = ''
+stages = [{'mask': None, 'niter': 10000, 'threshold': '1mJy'}, {'mask': 'prev', 'niter': 50000, 'threshold': '0.2mJy'}]
 cell = '2arcsec'
-robust = 0.0
 imsize = [2048, 2048]
-wprojplanes = 128
-niter = 50000
-threshold = '0.2mJy'
-multiscale = [0, 5, 10, 15]
-nterms = 2
-gridder = 'wproject'
-deconvolver = 'multiscale'
-specmode = 'cube'
+robust = 0.0
 uvtaper = ''
+scales = [0, 5, 10, 15]
+gridder = 'wproject'
+wprojplanes = 128
+deconvolver = 'multiscale'
+weighting = 'briggs'
+nterms = 2
+specmode = 'mfs'
 restfreq = '1420.406MHz'
 fitspw = ''
 imspw = ''
 fitorder = 1
 restoringbeam = ''
 stokes = 'I'
+rebin = False
+rebin_factor = [2, 2, 1]
+pb_correct = False
 pbthreshold = 0.1
 pbband = 'LBand'
-mask = ''
-rmsmap = ''
 outlierfile = ''
+combo = 0
+stage = 0
+
+[hi_image]
+hi_combos = [{'robust': 1.0, 'uvtaper': ''}]
+stages = [{'mask': None, 'niter': 50000, 'threshold': '0.6mJy'}, {'mask': 'prev', 'niter': 1500000, 'threshold': '0.24mJy'}]
+cell = '2.0arcsec'
+imsize = [2048, 2048]
+scales = [0, 3, 5, 10]
+gridder = 'wproject'
+wprojplanes = 256
+deconvolver = 'multiscale'
+weighting = 'briggs'
+rebin = False
+rebin_factor = [2, 2, 1]
+pb_correct = False
+pbthreshold = 0.1
+pbband = 'LBand'
+combo = 0
+stage = 0
 
 [run]
 continue = True
