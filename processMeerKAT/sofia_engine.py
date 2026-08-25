@@ -2,9 +2,12 @@
 #See processMeerKAT.py for license details.
 
 """Shared SoFiA-invocation engine behind `hi_image.py`/`science_image.py`'s masking and
-final source-finding passes -- see "Phase 6" in REFACTOR_PLAN.md. Mirrors
-`aux_scripts/run_sofia.py`'s copy-template/patch-keys/shell-out mechanism (a *different*
-SoFiA usage -- continuum-subtraction masking -- left untouched; don't conflate the two),
+final source-finding passes -- see "Phase 6" in REFACTOR_PLAN.md. `aux_scripts/run_sofia.py`
+(a *different* SoFiA usage -- continuum-subtraction masking, not HI/continuum-imaging
+masking; don't conflate the two) now imports `update_sofia_config()`/`run_sofia()` from
+here directly rather than keeping its own near-duplicate copies, so both usages share one
+parameter-file-patching/shell-out/return-code-checking implementation. `run_pass()` and the
+template constants below remain specific to this module's own masking/final-pass mechanism,
 factored out here rather than duplicated across two entry scripts (`hi_sofia.py` and
 `cont_sofia.py`)."""
 
@@ -65,13 +68,13 @@ def update_sofia_config(file_path, updates):
 
 def run_sofia(paramfile):
 
-    """Run SoFiA on 'paramfile', raising if it exits non-zero. `aux_scripts/run_sofia.py`'s
-    own equivalent call doesn't check this (confirmed via a real run: SoFiA can fail --
-    e.g. 'No negative sources found' on a too-shallow/too-small test image -- while
-    exiting 0, letting the pipeline silently continue into the next stage with no mask
-    ever produced, only surfacing as a confusing failure later). Left unfixed there (out of
-    scope, a different SoFiA usage -- continuum-subtraction masking), but checked here so a
-    real SoFiA failure stops the pipeline at its actual source."""
+    """Run SoFiA on 'paramfile', raising if it exits non-zero (confirmed via a real run:
+    SoFiA can fail -- e.g. 'No negative sources found' on a too-shallow/too-small test
+    image -- while exiting 0, which would otherwise let the pipeline silently continue into
+    the next stage with no mask ever produced, only surfacing as a confusing failure later).
+    `aux_scripts/run_sofia.py` (a different SoFiA usage -- continuum-subtraction masking)
+    now calls this same function rather than keeping its own unchecked copy, so it gets
+    this check too."""
 
     command = "sofia " + paramfile
     result = subprocess.run(command, shell=True, text=True, capture_output=False)

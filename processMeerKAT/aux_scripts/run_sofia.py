@@ -4,8 +4,8 @@
 import os, sys, time, re
 import config_parser
 import bookkeeping
+import sofia_engine
 from shutil import copyfile
-import subprocess
 
 THIS_PROG = __file__
 DEF_DIR = os.path.abspath(os.path.join(os.path.dirname(THIS_PROG), '..'))
@@ -15,48 +15,6 @@ import logging
 logging.Formatter.converter = time.gmtime
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=logging.INFO)
-
-def parse_sofia_config(file_path):
-    config = {}
-    with open(file_path, 'r') as file:
-        for line in file:
-            line = line.strip() # Removes ehitespace
-            if not line or line.startswith('#'): # Deletes comments and empty lines
-                continue
-            if '=' in line:
-                key, value = map(str.strip, line.split('=', 1))
-                if value.lower() in ['true', 'false']:
-                    value = value.lower() == 'true'
-                elif value.isdigit():
-                    value = int(value)
-                config[key] = value
-    return config
-
-def update_sofia_config(file_path, updates):
-    """
-    Update specific keys in a configuration file with new values.
-
-    Parameters:
-    - file_path: The path to the configuration file.
-    - updates: A dictionary where keys are the configuration keys to update,
-                and values are the new values to set.
-    """
-    # Read the original file content
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-
-    # Open the file in write mode to update it
-    with open(file_path, 'w') as file:
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, _ = map(str.strip, line.split('=', 1))
-                if key in updates:
-                    file.write(f"{key} = {updates[key]}\n")
-                else:
-                    file.write(f"{line}\n")
-            else:
-                file.write(f"{line}\n")
 
 def get_imagename(visname, loop):
     """Derive the '<basename>_im_<loop>' image prefix from the configured vis name.
@@ -79,15 +37,6 @@ def get_imagename(visname, loop):
     basename = visbase.replace('.mms', '').replace('.ms', '')
     return '{0}_im_{1}'.format(basename, loop)
 
-def run_sofia(paramfile):
-    
-    command = "sofia "+ paramfile
-    result = subprocess.run(command, shell=True, text=True, capture_output=False)
-
-    # print("STDOUT:", result.stdout)
-    # print("STDERR:", result.stderr)
-    # print("Return Code:", result.returncode)
-    
 def main(args,taskvals):
 
     visname = config_parser.validate_args(taskvals, "data", "vis", str)
@@ -101,9 +50,9 @@ def main(args,taskvals):
     
     updates={'input.data':'{0}.fits'.format(imagename)}
              #,'output.directory': f'{os.path.dirname(visname)}/'}
-    update_sofia_config(paramfile,updates)
-    
-    run_sofia(paramfile)
+    sofia_engine.update_sofia_config(paramfile,updates)
+
+    sofia_engine.run_sofia(paramfile)
     
 if __name__ == '__main__':
     
