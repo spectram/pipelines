@@ -29,6 +29,11 @@ ca9e44f Phase 1 (4e/5): migrate format_args()'s includes_partition check to scri
 a6c182a Phase 2 (2/4): cut [selfcal] config over to the 'stages' list
 e7e7607 Phase 2 (3/4): selfcal_part1.py -- thin mechanical update for the stage list
 55588c7 Phase 2 (4/4): selfcal_part2.py -- thin mechanical update for the stage list
+8b92821 Stop forcing selfcal_part1/part2 onto the scarce 'long' partition
+91d00b3 Write a listobs summary alongside the config during -B
+0c8ab55 Phase 3: fix stale CPUS_PER_NODE_LIMIT (64 -> 128, Setonix's real core count)
+0b4c9f1 Phase 3: move cluster hardware facts and named partitions into [cluster] config
+bdd5f82 Phase 3: consolidate CONTAINER_* dicts into one ContainerProfile registry
 ```
 
 (4a–5 above were landed by an unattended cloud agent session; it hit its account's usage-session
@@ -251,10 +256,55 @@ wrapper process/`srun` step itself is slow to exit afterward (observed ~2+ min h
 — harmless (no lingering `squeue` entry once it clears), but don't mistake it for a real hang if scripting
 around `-B`.
 
-**Next step**: the full production-scale 4-stage validation run this section originally called for is still
-outstanding (see above) — the smoke test de-risks the stage-list *mechanism* but not production-scale
-`tclean`/`gaincal` behavior or Phase 7b's walltime question. `pipe_test_refactor/` is left in place (jobs
-47573195–47573199 completed) for reference/reuse.
+**Next step (Phase 2)**: the full production-scale 4-stage validation run this section originally called for
+is still outstanding (see above) — the smoke test de-risks the stage-list *mechanism* but not
+production-scale `tclean`/`gaincal` behavior or Phase 7b's walltime question. `pipe_test_refactor/` is left
+in place (jobs 47573195–47573199 completed) for reference/reuse.
+
+**Done (2026-08-25): all of Phase 3.** All three parts landed as separate commits, each verified via
+`golden_diff.sh`:
+- **`8b92821`** (landed slightly ahead of the rest, while investigating the Phase 2 smoke test's queueing
+  problem): stopped force-routing `selfcal_part1`/`selfcal_part2` onto the scarce `long` partition (8 nodes,
+  4-day cap) — split `script_registry.py`'s `long_running` flag (which also drives an unrelated `ulimit -n`
+  bump) into its own `long_partition` property, left unset for selfcal so it uses whatever `[slurm]
+  partition` is configured. `science_image.py` keeps `long_partition=True`, unchanged. Confirmed via
+  `golden_diff.sh`: only the two selfcal `.sbatch` files changed (`partition: long` → `work`).
+- **`0c8ab55`** (the isolated core-count commit the plan called for): fixed the stale `CPUS_PER_NODE_LIMIT`
+  (64 → 128) — confirmed via `scontrol show node`/`sinfo` that Setonix's `work`/`long` nodes are 2×64-core
+  sockets (128 physical cores), `ThreadsPerCore=2` (256 logical). Set to the physical, not logical/SMT,
+  count (CASA/tclean's FFT-/gridding-heavy work is numerically bound and rarely benefits from
+  hyperthreading). Effect: every `cpu_intensive`-only script (not also `is_spw_fanout`, which clamps to 2
+  regardless) roughly doubles its requested `cpus-per-task`/`mem` — confirmed via `golden_diff.sh` that the
+  diff scope is exactly those 6 scripts and nothing else.
+- **`0b4c9f1`**: new `[cluster]` config section (`default_config.txt`) + `CLUSTER_CONFIG_KEYS`, replacing
+  the remaining module constants (`TOTAL_NODES_LIMIT`/`MEM_PER_NODE_GB_LIMIT`/`MEM_PER_NODE_GB_LIMIT_HIGHMEM`/
+  `MEM_PER_CPU_MB_SHARED`/`DEFAULT_MEM_GB`) and inline `'work'`/`'long'`/`'HighMem'`/`'Devel'` string
+  literals in `write_sbatch()`/`write_master()`/`format_args()`, plus the stale Ilifu `account` default in
+  `write_jobs()` (`'b03-idia-ag'` → `'pawsey1164'`). New `get_cluster_kwargs(config)` reads `[cluster]` but
+  falls back to `DEFAULT_CLUSTER_KWARGS` (mirroring the section's defaults) for a config predating this
+  section, via `config_parser.has_section()` rather than hard-requiring it — **confirmed existing configs
+  built before this change (no `[cluster]` section) still regenerate correctly via `-R`**, tested against a
+  real pre-existing config (not just the fixture). The Python module constants themselves stay (as
+  `DEFAULT_CLUSTER_KWARGS`) for argparse CLI defaults/`validate_args()`'s pre-config upper-bound checks,
+  mirroring the existing `[slurm]`/`DEFAULT_MEM_GB` duality — deliberately did not touch
+  `validate_args()`'s own limit checks, since those run during `-B` before any config file necessarily
+  exists. Verified via `golden_diff.sh`: every generated `.sbatch`/`submit_pipeline.sh` file byte-identical;
+  the only diff is `.config.tmp` (a verbatim copy of the input config) picking up the new section's content,
+  since an equivalent `[cluster]` section was added to the golden-diff fixture too.
+- **`bdd5f82`**: consolidated `CONTAINER_PYTHON`/`CONTAINER_ENV`/`CONTAINER_BINDS`/`CONTAINER_PREPEND_ENV`/
+  `CONTAINER_MODULES` (five separate container-keyed dicts) into one `ContainerProfile` frozen dataclass
+  registry (`CONTAINER_PROFILES`, looked up via `get_container_profile()`) — **stays code, not user config**,
+  per the plan's own reasoning: these are deep technical workarounds tied to one specific container build
+  (a spack-hash-suffixed OpenSSL path, a source-built `mpi4py` living outside the repo), so if `[slurm]
+  container` becomes freely swappable these must not silently stop applying to whatever container a user
+  points at instead. Added the called-for `logger.warning` (once per unique unrecognised container path, not
+  spammed per-script) when a configured container isn't in the registry. Verified via `golden_diff.sh`: zero
+  diff (purely structural); manually confirmed the warning fires once and known-container lookups
+  (`idianext.sif`, the SoFiA container) resolve identically to before.
+
+**Next step (Phase 3 is done; next in sequence per the write-up below is Phase 4)**: `-H`/`--hi_image`
+independent-flag toggle, gating the new Phase 6 HI-cube scripts and reverting this branch's
+`default_config.txt` `[image] specmode` default to `'mfs'`.
 
 **`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
 as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
