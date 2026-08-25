@@ -378,13 +378,17 @@ pattern as Phase 2's original verification gap.
 
 **Deferred, not implemented this phase** (documented in-code as a seam): a data-processing step before the
 final SoFiA pass (common beam to header, spectral axis unit conversion) that the prototype's own fincubes
-stage expected — noted in `default_hi_sofmask.txt`'s header comment for whoever adds it next (this template was later merged with the masking-pass template into one shared base file -- see the cleanup note below Phase 8).
-`combine_tracks.py` (6c) also not ported — out of scope per this round's Q&A (no new track-combining tool
-for continuum in this phase, and the existing HI-dev one wasn't touched).
+stage expected — noted in `default_hi_sofmask.txt`'s header comment for whoever adds it next (this template
+was later merged with the masking-pass template into one shared base file -- see the cleanup note below
+Phase 8). **Since implemented — see the "2026-08-25 (later session)" update further down; this paragraph is
+kept for historical context.** `combine_tracks.py` (6c) also not ported — out of scope per this round's Q&A
+(no new track-combining tool for continuum in this phase, and the existing HI-dev one wasn't touched); still
+not ported as of the update below either.
 
-**Next step**: Phase 7 (parallelism strategy for Setonix's 24h cap) is next in sequence — though the
-real-CASA verification gaps just above (`[cont_image]`/selfcal PB-correction) are worth closing first if
-picking this up for production use.
+**Next step (superseded — see the "2026-08-25 (later session)" update further down for the current one)**:
+Phase 7 (parallelism strategy for Setonix's 24h cap) is next in sequence — though the real-CASA verification
+gaps just above (`[cont_image]`/selfcal PB-correction) are worth closing first if picking this up for
+production use.
 
 **`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
 as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
@@ -411,6 +415,85 @@ to reuse" lesson when it's implemented, even though the specific bug that taught
 `HI-pawsey` has been pushed to `origin/HI-pawsey` through `543363b` (includes `2077eae` CLAUDE.md, `0013ebe`
 the calcpsf change, and `543363b` the actual fix) — check `git log origin/HI-pawsey..HI-pawsey` if picking
 this up later, in case more has landed since.
+
+**Update (2026-08-25, later session): a chain of real bugs found + fixed via actually building/running
+configs, and Phase 6's deferred data-processing step closed.** Started from a request to scope more
+imaging-config arguments to expose; ended up instead finding and fixing several bugs surfaced by really
+building/running configs against Setonix (not just `golden_diff`, which as usual doesn't exercise `-B`),
+plus a batch of design cleanups from a separate planning round, plus the fincubes post-processing step.
+15 commits, `d9c317c`..`1f36757` (`1289559`..`6658737` are also summarized under Phase 8's "Post-Phase-6
+cleanup" note below — same batch, described there in less detail).
+
+*Bugs found and fixed, all confirmed live against real Setonix `-B` builds*:
+- `d9c317c`: `write_command()` unconditionally injected idianext.sif's `OMPI_COMM_WORLD_RANK` env var,
+  tricking casampi into an `MPI_Init` that hangs forever, for the two ad hoc (non-sbatch) `srun` calls this
+  script makes directly (`read_ms.py`'s `-B` field extraction, `set_sky_model.py`'s RACS query) — neither is
+  MPI-parallel. Fixed with a new `mpi=` param to `write_command()`, `False` at both call sites.
+- `06810b8`: `configparser`'s section-header regex is greedy, so any `[section]  # comment ... ]` header
+  (several of `default_config.txt`'s own comments contain a `]`) silently corrupted that section's parsed
+  name into the entire garbled line — `has_section(config, 'cont_image'/'hi_image'/'cluster')` were all
+  returning `False` against a real built config, invisible to `golden_diff.sh` (whose fixture's headers
+  happen to have none). Fixed with `inline_comment_prefixes=('#',)` on the one `configparser.ConfigParser()`
+  instantiation.
+- `1fac16c`: `POSTCAL_SCRIPTS` (the argparse default for `-a`/`--postcal_scripts`, stamped into
+  `[slurm] postcal_scripts` at `-B` time *after* `default_config.txt` is copied into place, clobbering its
+  content) had silently fallen out of sync with `default_config.txt`'s own list since Phase 6 added
+  `hi_image.py`/`hi_sofia.py`/`cont_sofia.py` — every `-B` build since then, including several done earlier
+  in this same session, silently dropped all three regardless of `-H`/`-I`. Reproduced live, fixed by
+  bringing the constant back in sync.
+- `98ee6c3`: a bare `srun` with no `--ntasks` launches **3 concurrent tasks** on Setonix (a site default,
+  confirmed live with a standalone test), not 1 — every ad hoc `srun()` call (the same three as `d9c317c`
+  above) had been running 3x redundantly all session, racing to read-modify-write the same `myconfig.txt`.
+  Reproduced a real crash this way (`KeyError: 'crosscal'`, one task's `check_spw()` reading the file mid-write
+  by another) and fixed with explicit `--nodes=1 --ntasks=1`. Very likely explains the duplicated log lines
+  seen in *every* `-B` build all session (fields/refant/thread-count messages each printed 2-3 times),
+  previously dismissed as cosmetic rather than recognised as the same bug.
+- `a72ab55` (part of the cleanup batch, listed here too for visibility): `selfcal_part2.mask_image()` was
+  silently overwriting `run_sofia.py`'s SoFiA-derived mask with a freshly-regenerated PyBDSF mask, in the
+  SoFiA-driven final selfcal loop — defeating the entire point of that loop existing. Not caught by any prior
+  test since it's a real-CASA-only code path. **Not live-verified** (would need a multi-hour real selfcal
+  run) — code-reviewed only; add to the verification-gap list below.
+
+*Phase 6's deferred "data-processing step" is now implemented* (`f4b7a9a`, `120f4f3`, `31a02a3`): new
+`fincubes_postprocess.py` (pure astropy/numpy, no CASA import — confirmed astropy is available in the SoFiA
+container too, 6.1.7 — unit-tested standalone against synthetic FITS cubes, not just syntax-checked). Two
+steps, both run in `hi_image.py` (CASA side), on both the image and the PB cube, *before* the final SoFiA
+pass:
+- `add_median_beam()`: collapses a cube's per-plane restoring beams to one common beam (median
+  BMAJ/BMIN/BPA) in the header.
+- `freq_to_optical_velocity()`: converts the spectral axis from frequency to optical velocity, centred on
+  the middle channel (matching `tclean(veltype='optical')`'s own convention).
+
+The final SoFiA pass (`hi_sofia.py`) is gated to run only after both steps, and now additionally: estimates
+its own S+C spatial kernels (`scfind.kernelsXY`) from the just-collapsed `BMAJ`/`|CDELT1|`
+(`0, floor(beam_pix/2), beam_pix`), overriding whatever `sofia_final_params` configured for that one key;
+and passes the PB cube (also beam-collapsed/velocity-converted) as SoFiA's own `input.gain`.
+`image_engine.finalize_stage()`/`do_pb_corr()` extended to export the PB cube's own FITS too (previously
+only ever built as a CASA image, never exported) — return type changed to `(exported, pb_exported)`, both
+callers (`hi_image.py`, `science_image.py`) updated accordingly. Went through one design correction
+mid-session: the velocity conversion was initially placed *after* SoFiA (so SoFiA would see a frequency
+axis) before being corrected — both steps now run together, before SoFiA, on both files, per explicit
+direction.
+
+*New `-H` config-build behaviour* (`48e1aed`): `default_config.txt`'s shipped `[crosscal] spw`/`nspw` are
+tuned for a full multi-band continuum observation (an 11-range `spw`, `nspw=11`) — neither suits HI's
+narrow-band case, and this was a real, previously-unnoticed mismatch (`-H` builds left `nspw=11` untouched,
+so `-R` would split a single narrow HI band into 11 largely-arbitrary equal sub-chunks rather than reflecting
+any deliberate choice). `-H` now defaults `nspw` to 1; new `-F`/`--centralspw` (MHz) lets the user define
+`spw` as a ±10MHz window around a given central frequency directly, still subject to `read_ms.py`'s own
+`check_spw()` clamp against the real MS bounds as a safety net on top. Verified live both within and
+exceeding the MS's actual bounds (the latter correctly clamped).
+
+*Also*: `default_config.txt`'s `[selfcal]`/`[cont_image]` `scales` default trimmed from `[0,5,10,15]` to
+`[0,5,10]`, and `[cont_image] rebin_factor` from `[2,2,1]` to `[2,2]` (`1f36757`, manual config tuning, not
+independently verified against a real `imrebin()` call — `rebin_factor` normally wants one entry per image
+axis, so worth double-checking this 2-element value against however many axes `[cont_image]`'s export
+actually has before relying on `rebin=True` there).
+
+**Next step**: Phase 7 (parallelism strategy for Setonix's 24h cap) is next in sequence — though there are
+now three real-CASA verification gaps worth closing first if picking this up for production use:
+`[cont_image]`'s generalized imaging path, selfcal's ported PB-correction (both from the Phase 6 update
+above), and `selfcal_part2.mask_image()`'s SoFiA-mask fix (from this update).
 
 ---
 
