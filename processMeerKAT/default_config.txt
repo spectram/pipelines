@@ -122,10 +122,10 @@ deconvolver = 'multiscale'
 weighting = 'briggs'
 nterms = 2                        # Number of taylor terms (use deconvolver='mtmfs' for a true multi-term continuum fit)
 specmode = 'mfs'                  # 'mfs' or 'mtmfs' for continuum -- HI cube imaging is the separate [hi_image] pipeline
-restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH) -- also reused by [hi_image]
-fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub
-imspw = ''                        # SPW to select for imaging -- also reused by [hi_image]
-fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub
+restfreq = '1420.406MHz'          # HI line (change for other emission lines - e.g. OH) -- [hi_image] has its own separate 'restfreq', not read from here
+fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub -- also used by uvcontsub.py for -H/--contsub, independent of continuum imaging itself
+imspw = ''                        # SPW to select for imaging -- [hi_image] has its own separate 'imspw', not read from here
+fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub -- also used by uvcontsub.py for -H/--contsub, independent of continuum imaging itself
 restoringbeam = ''
 stokes = 'I'
 rebin = False                     # Rebin the final stage's image before export?
@@ -153,6 +153,8 @@ gridder = 'wproject'
 wprojplanes = 256
 deconvolver = 'multiscale'
 weighting = 'briggs'
+restfreq = '1420.406MHz'           # HI line (change for other emission lines - e.g. OH) -- own copy, not read from [cont_image]
+imspw = ''                        # SPW to select for imaging -- own copy, not read from [cont_image]
 rebin = False                     # Rebin the final stage's cube before export?
 rebin_factor = [2, 2, 1]          # imrebin() factor, only used when rebin=True
 pb_correct = False                # Apply katbeam PB-correction to the final stage's cube before export?

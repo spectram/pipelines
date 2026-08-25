@@ -97,9 +97,11 @@ CONT_IMAGE_CONFIG_KEYS = ['vis','stages','cell','imsize','robust','uvtaper','sca
 #New in Phase 6: HI cube imaging, images '[run] hi_contsub_vis' (uvcontsub.py's output) via
 #a 'stages' list (image_stages.py) crossed with 'hi_combos' (one entry per robust/uvtaper
 #weighting combination to image, each getting the full stage chain independently -- see
-#REFACTOR_PLAN.md's Phase 6 addendum). 'restfreq'/'imspw' are deliberately not duplicated
-#here -- reused directly from '[cont_image]'.
-HI_IMAGE_CONFIG_KEYS = ['hi_combos','stages','cell','imsize','scales','gridder','wprojplanes','deconvolver','weighting','rebin','rebin_factor','pb_correct','pbthreshold','pbband','combo','stage']
+#REFACTOR_PLAN.md's Phase 6 addendum). 'restfreq'/'imspw' are '[hi_image]''s own keys (not
+#read from '[cont_image]') so a '-H'-only run's imaging behaviour never depends on
+#'[cont_image]''s contents -- only uvcontsub.py's 'fitspw'/'fitorder' still come from
+#'[cont_image]' (uvcontsub is shared by '-H' and standalone '--contsub', not HI-specific).
+HI_IMAGE_CONFIG_KEYS = ['hi_combos','stages','cell','imsize','scales','gridder','wprojplanes','deconvolver','weighting','restfreq','imspw','rebin','rebin_factor','pb_correct','pbthreshold','pbband','combo','stage']
 SLURM_CONFIG_STR_KEYS = ['container','mpi_wrapper','partition','time','name','dependencies','exclude','account','reservation']
 SLURM_CONFIG_KEYS = ['nodes','ntasks_per_node','mem','plane','submit','precal_scripts','postcal_scripts','scripts','verbose','modules'] + SLURM_CONFIG_STR_KEYS
 
@@ -1463,10 +1465,11 @@ def default_config(arg_dict):
             config_parser.remove_section(filename, 'selfcal')
             remove_roles |= {'selfcal_part1', 'selfcal_part2'}
         if not arg_dict['science_image']:
-            #Don't remove '[cont_image]' itself here even though -I is off: hi_image.py
-            #(-H) and uvcontsub.py (-H/--contsub) both reuse '[cont_image]'
-            #restfreq/imspw/fitspw/fitorder regardless of whether continuum imaging itself
-            #is wanted -- only drop the section once nothing needs it at all (below).
+            #Don't remove '[cont_image]' itself here even though -I is off: uvcontsub.py
+            #(-H/--contsub) still reuses '[cont_image]' fitspw/fitorder regardless of
+            #whether continuum imaging itself is wanted (hi_image.py no longer does --
+            #'[hi_image]' has its own restfreq/imspw) -- only drop the section once
+            #nothing needs it at all (below).
             remove_roles |= {'science_image', 'cont_sofia'}
         if not arg_dict['science_image'] and not arg_dict['hi_image'] and not want_contsub:
             config_parser.remove_section(filename, 'cont_image')

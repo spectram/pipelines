@@ -71,8 +71,8 @@ def main(args, taskvals):
     wprojplanes = va(taskvals, 'hi_image', 'wprojplanes', int)
     deconvolver = va(taskvals, 'hi_image', 'deconvolver', str)
     weighting = va(taskvals, 'hi_image', 'weighting', str)
-    restfreq = va(taskvals, 'cont_image', 'restfreq', str)
-    imspw = va(taskvals, 'cont_image', 'imspw', str)
+    restfreq = va(taskvals, 'hi_image', 'restfreq', str)
+    imspw = va(taskvals, 'hi_image', 'imspw', str)
 
     logger.info('Imaging combo {0}/{1} (robust={2}, uvtaper={3!r}), stage {4}/{5}.'.format(
         combo, len(hi_combos)-1, robust, uvtaper, stage, len(stages)-1))
