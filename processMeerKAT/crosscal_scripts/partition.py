@@ -6,6 +6,7 @@ Runs partition on the input MS
 """
 import sys
 import os
+import glob
 
 import config_parser
 from config_parser import validate_args as va
@@ -60,13 +61,34 @@ def main(args,taskvals):
         spwname = spw.replace('*:','')
 
     msmd.open(visname)
-    npol = msmd.ncorrforpol()[0]
+    #msmd.ncorrforpol() returns a numpy scalar (numpy int32/int64), not a plain Python int.
+    #Left uncast, CPUs below inherits that numpy dtype, and passing it to mstransform's
+    #nthreads= means CASA's MPI layer serializes the call (to ship to remote worker ranks) with
+    #NumPy 2.x's scalar repr, e.g. 'nthreads=np.int64(2)' -- which then fails with
+    #NameError: name 'np' is not defined on every rank when eval'd remotely (no numpy import in
+    #that namespace). mstransform() itself doesn't raise on this -- confirmed live: every rank's
+    #sub-MS creation failed, but the job still exited 0/COMPLETED having produced an empty MMS,
+    #only surfacing as a confusing failure in the next script (validate_input.py, unable to open
+    #the nonexistent table). int() here (and again on npol itself, since it feeds the same
+    #comparison/assignment) prevents this at the source.
+    npol = int(msmd.ncorrforpol()[0])
 
     if not include_crosshand and npol == 4:
         npol = 2
-    CPUs = npol if tasks*npol <= processMeerKAT.CPUS_PER_NODE_LIMIT else 1 #hard-code for number of polarisations
+    CPUs = int(npol if tasks*npol <= processMeerKAT.CPUS_PER_NODE_LIMIT else 1) #hard-code for number of polarisations
 
     mvis = do_partition(visname, spw, preavg, CPUs, include_crosshand, createmms, spwname)
+
+    #mstransform() can silently fail per-rank (as above) without raising here -- confirmed live.
+    #Check real output exists before declaring success, rather than letting an empty MMS pass
+    #through to every downstream script as if partitioning had actually worked.
+    if not os.path.exists(mvis):
+        raise RuntimeError("mstransform() did not produce output '{0}'.".format(mvis))
+    if createmms and len(glob.glob('{0}/SUBMSS/*'.format(mvis))) == 0:
+        raise RuntimeError("mstransform() produced '{0}' but it has no SUBMSS -- partitioning "
+            "silently failed on every MPI rank (check logs/*.mpi and logs/*.err for the real "
+            "per-rank error).".format(mvis))
+
     mvis = "'{0}'".format(mvis)
     vis = "'{0}'".format(visname)
 
