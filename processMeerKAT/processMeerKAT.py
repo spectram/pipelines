@@ -264,8 +264,17 @@ def get_container_profile(container):
 
 MPI_WRAPPER = 'srun'
 PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts run before calibration at top level directory when nspw > 1
+#Stays in sync with default_config.txt's own 'postcal_scripts' line by hand -- this is the
+#argparse default for '-a'/'--postcal_scripts', so it's what actually gets stamped into
+#[slurm] postcal_scripts at '-B' time via get_slurm_dict()/overwrite_config() (which runs
+#*after* default_config.txt is copied into place, clobbering its content) whenever the user
+#doesn't pass '-a' explicitly. Confirmed live: this had silently fallen out of sync with
+#default_config.txt after hi_image.py/hi_sofia.py/cont_sofia.py were added there (Phase 6) --
+#every '-B' build since then silently dropped those three scripts (and kept the stale
+#science_image.py entry, later filtered out again by -I/-H gating) regardless of -H/-I flags.
 POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''), \
-('run_sofia.py', False, SOFIA_CONTAINER), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), ('science_image.py', True, '')] #Scripts run after calibration at top level directory when nspw > 1
+('run_sofia.py', False, SOFIA_CONTAINER), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), \
+('hi_image.py', False, ''), ('hi_sofia.py', False, SOFIA_CONTAINER), ('science_image.py', False, ''), ('cont_sofia.py', False, SOFIA_CONTAINER)] #Scripts run after calibration at top level directory when nspw > 1
 SCRIPTS = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
