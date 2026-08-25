@@ -18,11 +18,13 @@
 # Ported from m2-image-scripts (origin/HI-dev): m2h0/m2h0sof.file (masking pass) and
 # fincubes/rebinsof.file (final pass) -- see REFACTOR_PLAN.md's Phase 6 write-up.
 #
-# NOTE (deferred, not yet implemented): the prototype's own use of the final pass expected a
-# data-processing step just before it -- adding a common beam to the header, converting
-# spectral axis units, etc. That step doesn't exist yet; the final pass currently runs
-# directly on finalize_stage()'s exported FITS. Add that step here (before the sofia() call
-# in hi_sofia.py/cont_sofia.py) when it's built.
+# The prototype's own use of the final pass expected a data-processing step just before it --
+# adding a common beam to the header, converting spectral axis units, etc. Implemented as
+# fincubes_postprocess.py, called from hi_image.py right after finalize_stage()'s export (on
+# the CASA side, before this final SoFiA pass ever runs) -- HI cube imaging only, not
+# continuum (cont_sofia.py's final pass still runs directly on the raw export, since mfs
+# continuum images have neither a per-plane beam table nor a meaningful spectral axis to
+# convert).
 
 
 # Global settings

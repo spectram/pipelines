@@ -115,7 +115,15 @@ def do_pb_corr(inpimage, pbthreshold=0, pbband='LBand'):
     pbthreshold : float, optional
         Cutoff threshold to mask the PB.
     pbband : str, optional
-        Band at which to generate the PB."""
+        Band at which to generate the PB.
+
+    Returns:
+    --------
+    pbcorimage : str
+        Path to the PB-corrected CASA image.
+    pbimage : str
+        Path to the PB response CASA image itself (same coordinate system/per-plane beams as
+        'inpimage', copied verbatim -- only pixel values are replaced)."""
 
     from katbeam import JimBeam
 
@@ -176,7 +184,7 @@ def do_pb_corr(inpimage, pbthreshold=0, pbband='LBand'):
     ia.putchunk(pbcor_imgdata)
     ia.close()
 
-    return pbcorimage
+    return pbcorimage, pbimage
 
 
 def finalize_stage(outimage, export_dir, rebin=False, rebin_factor=None, pb_correct=False,
@@ -186,8 +194,12 @@ def finalize_stage(outimage, export_dir, rebin=False, rebin_factor=None, pb_corr
     export to 'export_dir' (mirrors the prototype's 'fincubes/' step, per REFACTOR_PLAN.md's
     Phase 6 addendum). PB-correction is intentionally sequenced *before* export but does not
     gate it -- the exported product is valid whether or not PB-correction ran, per user
-    direction. Native frequency units are kept (no velocity conversion) -- deferred to a
-    future post-processing step (see the module docstring note in `hi_image.py`).
+    direction. When PB-correction is on, the PB response cube itself is also exported to FITS
+    (alongside the PB-corrected image), so callers can post-process both -- see
+    `fincubes_postprocess.py` (HI cube imaging's median-beam/frequency->velocity step, called
+    by `hi_image.py` right after this function, not here -- this module stays CASA-generic,
+    shared with continuum imaging, which doesn't want that step). Native frequency units are
+    kept (no velocity conversion) here -- see `fincubes_postprocess.py`.
 
     Arguments:
     ----------
@@ -208,10 +220,13 @@ def finalize_stage(outimage, export_dir, rebin=False, rebin_factor=None, pb_corr
     Returns:
     --------
     exported : str
-        Path to the exported (FITS) image, for the final SoFiA pass to consume."""
+        Path to the exported (FITS) image, for the final SoFiA pass to consume.
+    pb_exported : str
+        Path to the exported (FITS) PB response cube, or '' if `pb_correct` is False."""
 
     os.makedirs(export_dir, exist_ok=True)
     image_to_export = outimage
+    pb_fitsimage = ''
 
     if rebin:
         rebinned = outimage.rstrip('/') + '_rebin.im'
@@ -220,11 +235,15 @@ def finalize_stage(outimage, export_dir, rebin=False, rebin_factor=None, pb_corr
         image_to_export = rebinned
 
     if pb_correct:
-        image_to_export = do_pb_corr(image_to_export, pbthreshold, pbband)
+        image_to_export, pbimage = do_pb_corr(image_to_export, pbthreshold, pbband)
+        pb_base = os.path.basename(pbimage.rstrip('/'))
+        pb_fitsimage = os.path.join(export_dir, pb_base + '.fits')
+        if not os.path.exists(pb_fitsimage):
+            exportfits(imagename=pbimage, fitsimage=pb_fitsimage, overwrite=True, dropdeg=True, dropstokes=True)
 
     base = os.path.basename(image_to_export.rstrip('/'))
     fitsimage = os.path.join(export_dir, base + '.fits')
     if not os.path.exists(fitsimage):
         exportfits(imagename=image_to_export, fitsimage=fitsimage, overwrite=True, dropdeg=True, dropstokes=True)
 
-    return fitsimage
+    return fitsimage, pb_fitsimage

@@ -88,7 +88,10 @@ def main(args, taskvals):
         pbband = va(taskvals, 'cont_image', 'pbband', str, default='LBand')
 
         export_dir = os.path.join(combo_dir, 'fincubes')
-        exported = image_engine.finalize_stage(outimage, export_dir, rebin=rebin, rebin_factor=rebin_factor,
+        #pb_exported (the PB cube's own FITS export, when pb_correct) isn't used here --
+        #continuum's mfs images are single-plane, so fincubes_postprocess.py's per-plane-beam/
+        #spectral-axis steps (HI-cube-specific, wired in hi_image.py instead) don't apply.
+        exported, _ = image_engine.finalize_stage(outimage, export_dir, rebin=rebin, rebin_factor=rebin_factor,
             pb_correct=pb_correct, pbthreshold=pbthreshold, pbband=pbband)
 
         #cont_sofia.py's final pass reads this to know what to source-find on.

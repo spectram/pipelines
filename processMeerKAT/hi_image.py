@@ -20,6 +20,7 @@ from config_parser import validate_args as va
 import bookkeeping
 import image_stages
 import image_engine
+import fincubes_postprocess
 import processMeerKAT
 
 from casatasks import exportfits, casalog
@@ -99,8 +100,16 @@ def main(args, taskvals):
         pbband = va(taskvals, 'hi_image', 'pbband', str, default='LBand')
 
         export_dir = os.path.join(combo_dir, 'fincubes')
-        exported = image_engine.finalize_stage(outimage, export_dir, rebin=rebin, rebin_factor=rebin_factor,
+        exported, pb_exported = image_engine.finalize_stage(outimage, export_dir, rebin=rebin, rebin_factor=rebin_factor,
             pb_correct=pb_correct, pbthreshold=pbthreshold, pbband=pbband)
+
+        #Deferred "data processing" step (see REFACTOR_PLAN.md's Phase 6 write-up and the old
+        #SoFiA final-pass template's note): add a single common (median) beam to the header
+        #and convert the spectral axis to optical velocity, on both the image and (if
+        #produced) the PB cube -- restfreq defaults to the FITS header's own RESTFRQ.
+        fincubes_postprocess.postprocess(exported)
+        if pb_exported != '':
+            fincubes_postprocess.postprocess(pb_exported)
 
         #hi_sofia.py's final pass reads this to know what to source-find on.
         config_parser.overwrite_config(args['config'], conf_dict={'final_export': "'{0}'".format(exported)}, conf_sec='hi_image', sec_comment='# Internal variables for pipeline execution')
