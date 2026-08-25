@@ -309,9 +309,45 @@ reverted to `'mfs'`. Verified via `golden_diff.sh` (clean, as expected) and a ma
 (`-x`/`--nofields`, no CASA needed) across all four `-I`/`-H` combinations — see `c33a46a`'s commit message
 for the exact confirmation.
 
-**Next step**: Phase 5 (decouple `uvsub`/`uvcontsub`, modernize to the new `uvcontsub` task) is next in
-sequence, needed before Phase 6 (HI cube imaging port — see that section's addendum for a since-added
-`hi_combos` requirement) can gate its new scripts meaningfully.
+**Done (2026-08-25): Phase 5 — decoupled `uvsub`/`uvcontsub`, migrated to the new `uvcontsub` task
+(`b1a52b5`), and verified against real CASA** (not just syntax/manual review, unlike Phase 2's original
+verification — this session has live Setonix access). New `--contsub` flag, independent of `-H`; both gate
+`uvsub.py`/`uvcontsub.py` via their already-registered `script_registry` roles. `uvcontsub.py` migrated to
+`uvcontsub(vis=vis, outputvis=outputvis, datacolumn='corrected', fitspec=fitspw, fitorder=fitorder,
+writemodel=True)`, no longer touches `[data] vis` (writes `[run] hi_contsub_vis` instead, via a new
+`bookkeeping.get_hi_contsub_vis()` accessor), and reproduces the old task's `want_cont=True` behavior
+explicitly via `split(vis=vis, outputvis=vis+'.cont', datacolumn='model')` → `[run] continuum_vis` →
+`bookkeeping.get_continuum_vis()`. Both outputs get a skip-if-exists guard.
+
+Real-CASA smoke test (reusing `pipe_test_refactor/`'s already-selfcal'd, model-populated MMS from the Phase
+2 smoke test, job 47580458): confirmed from the actual CASA task log that `uvcontsub`/`split` ran with
+exactly the expected parameters and produced both output MSs (`.contsub`, `.cont`); confirmed `[data] vis`
+stayed untouched; confirmed `bookkeeping.get_hi_contsub_vis()`/`get_continuum_vis()` read back the correct
+paths from the resulting config.
+
+**Found, not fixed (out of Phase 5's scope): a multi-task script whose entire body gets skipped by an
+idempotency guard can hang until walltime kill, rather than exiting promptly.** Re-ran the identical
+generated `uvcontsub.sbatch` a second time (job 47581620, both outputs already existing) specifically to
+confirm the skip-if-exists guard — the guard itself worked correctly (log shows both "already exists. Not
+overwriting" messages within ~2s of starting), but the job then hung for the *entire* configured 20-minute
+walltime and was killed by SLURM's time limit (`sacct`: `TIMEOUT`, not `COMPLETED`) rather than exiting once
+`main()` finished. The first (real-work) run exited normally in 2m17s with no such hang. Root cause not
+fully diagnosed, but the pattern points at casampi: `uvcontsub.py` is `threadsafe=True`/`requires_mms=True`
+(`split()` parallelizes across an MMS's sub-MSs), so it launches with multiple (here, 9) `srun` tasks; when
+neither `uvcontsub()` nor `split()` ever actually gets called, whatever MPI-rank coordination normally
+happens inside those task calls (and apparently triggers the other ranks' clean shutdown afterward) never
+happens, so the non-rank-0 tasks are left waiting indefinitely. **This is very plausibly not new to Phase
+5** — `science_image.py` has the identical `if not os.path.exists(imname): tclean(...)` idempotency pattern
+and is also `threadsafe=True`, so a re-run against an already-complete science image may hit the exact same
+hang; not confirmed here (would need its own real run to test) but worth checking before relying on
+resubmit/resume behavior for any multi-task script with a full-skip idempotency path. Practical impact: on a
+real production walltime (hours, not this test's 20 minutes), a routine "resubmit to pick up where it left
+off" could silently burn the entire walltime budget doing nothing rather than finishing in seconds — worth
+whoever next touches Phase 7's checkpoint/resume design (or resumes any partially-complete run) knowing
+about this. `pipe_test_refactor/logs/uvcontsub-47581620.*` has the full log if picking this up later.
+
+**Next step**: Phase 6 (HI cube imaging port — see that section's addendum for the since-added `hi_combos`
+requirement) is next in sequence; Phase 5's `hi_contsub_vis` handoff it depends on is now in place.
 
 **`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
 as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
