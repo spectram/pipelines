@@ -144,7 +144,7 @@ sofia_final_params = {'scfind.kernelsXY': '0, 4, 8, 12', 'reliability.threshold'
 combo = 0                         # Internal: unused for [cont_image] (no combo axis, unlike [hi_image]) -- reserved for consistency
 stage = 0                         # Internal: current stage index in 'stages', advanced by cont_sofia.py
 
-[contsub]                         # uvcontsub.py's continuum-fit parameters -- shared by -H and standalone --contsub, independent of whether continuum imaging ([cont_image]) itself runs
+[contsub]                         # uvcontsub.py's continuum-fit parameters -- shared by -H and standalone --contsub, independent of whether continuum imaging (cont_image, above) itself runs
 fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub
 fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub
 
