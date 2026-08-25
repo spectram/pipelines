@@ -346,8 +346,45 @@ off" could silently burn the entire walltime budget doing nothing rather than fi
 whoever next touches Phase 7's checkpoint/resume design (or resumes any partially-complete run) knowing
 about this. `pipe_test_refactor/logs/uvcontsub-47581620.*` has the full log if picking this up later.
 
-**Next step**: Phase 6 (HI cube imaging port — see that section's addendum for the since-added `hi_combos`
-requirement) is next in sequence; Phase 5's `hi_contsub_vis` handoff it depends on is now in place.
+**Done (2026-08-25): Phase 6 — HI cube imaging port, plus continuum imaging unification** (`a33a983`; see the
+"Phase 6" section below for the full design, arrived at through a planning round with the user that
+substantially extended the original scope — robust/uvtaper combos, katbeam PB-correction reuse, per-combo
+output dirs, one final SoFiA pass instead of the prototype's three, and unifying `[image]`/`science_image.py`
+onto the same stage-list/SoFiA-masking engine as the new `[hi_image]`, renamed `[cont_image]`).
+
+New shared modules `image_stages.py` (CASA-free, mirrors `selfcal_stages.py`)/`image_engine.py`/
+`sofia_engine.py`, new entry scripts `hi_image.py`+`hi_sofia.py` ([hi_image]) and `cont_sofia.py`
+(`science_image.py` generalized in place, now reading `[cont_image]`), `expand_hi_combo_scripts()`/
+`expand_cont_image_stage_scripts()` mirroring `expand_selfcal_loop_scripts()`. Separately ported
+PB-correction into selfcal's own final loop (`[selfcal] pb_correct`, default `False`).
+
+**Real end-to-end CASA verification — HI path only**: reusing `pipe_test_refactor/`'s already-contsub'd MMS,
+ran the full 2-stage/1-combo chain (dirty tclean → FITS export → SoFiA masking pass → mask import → final
+deep clean → fincubes export → final SoFiA source-finding) against real CASA/SoFiA — every step `COMPLETED`,
+combo/stage state advanced correctly throughout. Found and fixed 3 real bugs this surfaced (not smoke-test
+artifacts): `config_parser.validate_args()` doesn't support `list` dtype (needed direct dict reads for
+`stages`/`hi_combos`/`imsize`/`scales`); `hi_sofia.py`/`cont_sofia.py` incorrectly imported `casatasks`
+despite running in the CASA-free SoFiA container (FITS export moved to the CASA-side scripts);
+`sofia_engine.run_sofia()` didn't check SoFiA's exit code, silently swallowing a failure and letting the
+pipeline continue with a mask that was never produced (now raises). Also needed
+`importfits(defaultaxes=True, defaultaxesvalues=[...])` explicitly, mirroring
+`bookkeeping.get_selfcal_args()`'s existing usermask-import pattern.
+
+**Not verified against real CASA this session**: `science_image.py`'s generalized `[cont_image]` path (only
+syntax-checked + `golden_diff.sh`) and selfcal's ported PB-correction — both share the exact code paths
+(`image_engine.py`) already proven by the HI smoke test, but the entry-script-level wiring for these two
+specifically hasn't been run for real. Worth a real run before trusting them in production, same caveat
+pattern as Phase 2's original verification gap.
+
+**Deferred, not implemented this phase** (documented in-code as a seam): a data-processing step before the
+final SoFiA pass (common beam to header, spectral axis unit conversion) that the prototype's own fincubes
+stage expected — noted in `default_hi_sofmask_final.txt`'s header comment for whoever adds it next.
+`combine_tracks.py` (6c) also not ported — out of scope per this round's Q&A (no new track-combining tool
+for continuum in this phase, and the existing HI-dev one wasn't touched).
+
+**Next step**: Phase 7 (parallelism strategy for Setonix's 24h cap) is next in sequence — though the
+real-CASA verification gaps just above (`[cont_image]`/selfcal PB-correction) are worth closing first if
+picking this up for production use.
 
 **`HI-pawsey`'s `selfcal_part1` crash is resolved** (as of `HI-pawsey` commit `543363b`, cherry-picked here
 as `a062602`). Phase 2's write-up below still contains a "Correction (2026-08-22...)" callout describing an
@@ -665,29 +702,44 @@ count. `combine_tracks.py` (6c) is **not** combo-aware in this initial cut (the 
 m2h0+mask+m2h1 loop) — worth flagging as a likely follow-up once 6c is actually built, since it will need to
 know which combo's outputs it's combining across two tracks, but out of scope for this addendum.
 
-- **6a**: `hicube0.py` (dirty cube `tclean` + `exportfits` + `immoments`) + its SoFiA mask pass, rewritten
-  as `casatasks` function calls reading a new `[hi_image]` config section using the paired-list convention
-  already established by `[selfcal]` (e.g. `hi_niter=[50000,1500000]`, `hi_threshold=['0.6mJy','0.24mJy']`,
-  plus `scales`/`gridder`/`wprojplanes`/`deconvolver`/`weighting` lifted from the prototype's literal values
-  as defaults, and `robust`/`uvtaper` resolved per-combo from `hi_combos` per the addendum above). Reuse
-  `restfreq`/`imspw` from the existing `[image]` section rather than duplicating them. SoFiA `.file`
-  templates adapted from the pattern already established by `aux_scripts/run_sofia.py` (note: that's a
-  *different* SoFiA usage — continuum subtraction masking — from this one; don't conflate them when
-  refactoring).
-- **6b**: `hicube1.py` (import SoFiA mask, final deep clean with `pbcor`, moments/rebin/fincubes export),
-  same config-driven treatment, same per-combo repetition. Preserve the prototype's `tclean`-internal PB
-  correction (`vp.setpbnumeric`/`vptable`) as-is rather than unifying with `science_image.py`'s post-hoc
-  katbeam-based `do_pb_corr` — a radio-astronomy correctness call (per-channel PB variation across a cube
-  may need this specific approach), not something to silently merge during a refactor.
-- **6c**: `combine_tracks.py` — confirmed this combines two *independently run* pipeline passes (separate
-  observing tracks, each with their own full calibration run), not two things within one run. Build as a
-  small standalone multi-run orchestration tool (e.g. `combine_tracks.py <config1> <config2> <output>`,
-  taking two runs' output MS paths/configs as arguments) rather than forcing it into the `SCRIPTS`-tuple
-  single-run model where it doesn't fit.
-- New entries added to `POSTCAL_SCRIPTS`/`postcal_scripts` for 6a/6b (threadsafe/container tuples, the
-  three SoFiA passes reusing the already-registered SoFiA container), gated behind `-H` via Phase 4's
-  registry-driven `remove_scripts`, and expanded per-combo via `expand_hi_combo_scripts()` per the addendum
-  above.
+**As shipped (2026-08-25, `a33a983`) — superseding 6a/6b/6c below after a planning round with the user that
+substantially revised the design.** Kept for history; see the "Done: Phase 6" status entry above for
+verification details.
+
+- Reuses `science_image.py`'s existing katbeam `do_pb_corr()` instead of the prototype's own
+  `vp.setpbnumeric`/`vptable` PB model — moved to the new shared `image_engine.py` so both HI and continuum
+  imaging (and selfcal's final loop, separately) call the same correction. PB-correction is opt-in
+  (`pb_correct`, default `False`), not unconditional like the prototype.
+  `immoments` dropped entirely, and the prototype's *second* SoFiA pass (on the un-rebinned final image)
+  dropped too — only a masking pass (between stages) and one final source-finding pass (post-export)
+  remain, down from the prototype's three SoFiA passes.
+- 6a/6b's dirty-cube/final-deep-clean split collapsed into one stage-list-driven engine
+  (`image_stages.Stage`: `mask`/`niter`/`threshold`, exactly `[selfcal] stages`'s shape) rather than two
+  fixed steps — `hi_niter`/`hi_threshold` paired lists never shipped; `[hi_image] stages` (a list of stage
+  dicts) replaced that plan outright. `hi_image.py` (imaging) + `hi_sofia.py` (masking/final SoFiA passes)
+  are the only two new script files, both thin wrappers sharing `image_engine.py`/`sofia_engine.py` with
+  **continuum** imaging too: `[image]` was renamed `[cont_image]` and `science_image.py` (formerly one fixed
+  `tclean` call) generalized to the same stage/mask-aware design, paired with new `cont_sofia.py` — not
+  originally planned, added per the user's direction that continuum and HI imaging should run "the same
+  scripts with different parameters." `restfreq`/`imspw` reused from `[cont_image]` (renamed from `[image]`
+  per the above, not left in a separate `[image]` section as 6a originally described).
+- Output directory structure: `hi_combo<N>/` per combo (not per-parameter-value naming — see the addendum
+  above), containing `stage<N>.image` etc. per stage and a `hi_combo<N>/fincubes/` subdir for the final
+  exported (optionally rebinned) product — `cont_image/` (no combo axis) for continuum.
+- Order after the final stage's `tclean`: optional `imrebin` → optional PB-correction → `fincubes`-style
+  export (export works on non-PB-corrected data, so it isn't gated on PB-correction having run) — corrected
+  from the prototype's own interleaved order per the user's direction.
+- **6c (`combine_tracks.py`) not ported this phase** — confirmed out of scope: no continuum equivalent
+  needed, and the existing HI-dev prototype version wasn't touched or copied in.
+- **Deferred, not implemented**: a data-processing step the prototype's fincubes stage expected before its
+  final SoFiA pass (common beam to header, spectral axis unit conversion) — noted as an in-code seam in
+  `default_hi_sofmask_final.txt`'s header comment for whoever adds it next. `exportfits` also deliberately
+  keeps native frequency units now (dropped the prototype's `velocity=True, optical=True`), per the user's
+  direction that this belongs in that same future post-processing step.
+- New `script_registry` roles (`hi_image`, `hi_sofia`, `cont_sofia`), gated behind `-H`/`-I` respectively via
+  Phase 4's registry-driven `remove_roles`, and expanded via `expand_hi_combo_scripts()`/
+  `expand_cont_image_stage_scripts()` (flat replication — every stage needs its own SoFiA pass, unlike
+  `expand_selfcal_loop_scripts()`'s special-cased final loop).
 
 ## Phase 7 — Parallelism strategy for Setonix's 24h cap (goal 6) — confirmed: split into two tracks
 
