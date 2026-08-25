@@ -396,6 +396,7 @@ def parse_args():
     parser.add_argument("-2","--do2GC", action="store_true", required=False, default=False, help="Perform (2GC) self-calibration in the pipeline [default: False].")
     parser.add_argument("-I","--science_image", action="store_true", required=False, default=False, help="Create a science image [default: False].")
     parser.add_argument("-H","--hi_image", action="store_true", required=False, default=False, help="Create an HI (spectral-line) cube image, independent of [-I --science_image] -- both can be set together [default: False].")
+    parser.add_argument("--contsub", action="store_true", required=False, default=False, help="Run uvsub.py/uvcontsub.py to produce continuum-subtracted visibilities, independent of [-H --hi_image] (e.g. for contsub'd data without full cube imaging) [default: False].")
     parser.add_argument("-x","--nofields", action="store_true", required=False, default=False, help="Do not read the input MS to extract field IDs [default: False].")
     parser.add_argument("-j","--justrun", action="store_true", required=False, default=False, help="Just run the pipeline, don't rebuild each job script if it exists [default: False].")
 
@@ -1324,7 +1325,12 @@ def default_config(arg_dict):
     config_parser.overwrite_config(filename, conf_dict={'vis' : "'{0}'".format(MS)}, conf_sec='data')
     config_parser.overwrite_config(filename, conf_dict={'dopol' : arg_dict['dopol']}, conf_sec='run', sec_comment='# Internal variables for pipeline execution')
 
-    if not arg_dict['do2GC'] or not arg_dict['science_image'] or not arg_dict['hi_image']:
+    #uvsub.py/uvcontsub.py are needed by -H (HI cube imaging consumes their contsub'd output -- see
+    #Phase 6) or by the standalone --contsub override (contsub'd visibilities without full cube
+    #imaging); independent of both -2/-I, same as -H itself.
+    want_contsub = arg_dict['hi_image'] or arg_dict['contsub']
+
+    if not arg_dict['do2GC'] or not arg_dict['science_image'] or not arg_dict['hi_image'] or not want_contsub:
         #Roles to drop from postcal_scripts, keyed by declared pipeline_role rather than
         #literal filename -- same pattern as write_master()/write_spw_master()'s has_role()
         #(ed18bb7) and format_args()'s selfcal-present check (0e3c9ef).
@@ -1345,6 +1351,14 @@ def default_config(arg_dict):
             #above. 'hi_image' config section removal deliberately omitted here too, for the same
             #reason: that section doesn't exist yet.
             remove_roles.add('hi_image')
+        if not want_contsub:
+            #Previously always ran whenever nspw > 1, regardless of -I/-H (a confirmed bug -- see
+            #REFACTOR_PLAN.md's Phase 5 write-up): uvcontsub.py used to overwrite the shared
+            #[data] vis key, so science_image.py (continuum) would silently end up imaging
+            #contsub'd data if it happened to run afterward in postcal_scripts. Now gated
+            #explicitly, and uvcontsub.py no longer touches [data] vis at all (writes
+            #[run] hi_contsub_vis instead) -- see bookkeeping.get_hi_contsub_vis().
+            remove_roles |= {'uvsub', 'uvcontsub'}
 
         scripts = [s for s in arg_dict['postcal_scripts']
                    if script_registry.get_properties(s[0]).pipeline_role not in remove_roles]

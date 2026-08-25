@@ -19,6 +19,46 @@ logging.Formatter.converter = gmtime
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=logging.INFO)
 
+def get_hi_contsub_vis(config):
+
+    """Return the path to the continuum-subtracted MS written by uvcontsub.py's new uvcontsub-task
+    migration ('[run] hi_contsub_vis' -- see REFACTOR_PLAN.md's Phase 5 write-up). Unlike the old
+    uvcontsub_old-based version, uvcontsub.py no longer overwrites '[data] vis' with this path, so
+    science_image.py (continuum) isn't silently affected by contsub having run -- only Phase 6's
+    HI scripts should call this accessor explicitly.
+
+    Arguments:
+    ----------
+    config : str
+        Path to config file.
+
+    Returns:
+    --------
+    hi_contsub_vis : str
+        Path to the continuum-subtracted MS ('' if uvcontsub.py hasn't run yet)."""
+
+    taskvals, _ = config_parser.parse_config(config)
+    return config_parser.validate_args(taskvals, 'run', 'hi_contsub_vis', str, default='')
+
+def get_continuum_vis(config):
+
+    """Return the path to the standalone continuum-only MS ('[run] continuum_vis', materialized by
+    uvcontsub.py via a split() on the continuum model -- reproduces the old uvcontsub_old task's
+    'want_cont=True' behavior explicitly, since the new uvcontsub task has no direct equivalent).
+
+    Arguments:
+    ----------
+    config : str
+        Path to config file.
+
+    Returns:
+    --------
+    continuum_vis : str
+        Path to the continuum-only MS ('' if uvcontsub.py hasn't run yet)."""
+
+    taskvals, _ = config_parser.parse_config(config)
+    return config_parser.validate_args(taskvals, 'run', 'continuum_vis', str, default='')
+
 def get_calfiles(visname, caldir):
         base = os.path.splitext(visname)[0]
         kcorrfile = os.path.join(caldir,base + '.kcal')
