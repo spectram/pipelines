@@ -149,6 +149,74 @@ def check_file(filepath):
     else:
         logger.info('Calibration table "{0}" successfully written.'.format(filepath))
 
+def smooth_bandpass_caltable(caltable, kernel):
+
+    """Box-car smooth a 'B' (bandpass) caltable's solutions across channels, per
+    antenna/spw/pol row, to improve S/N -- matches MHONGOOSE's own bandpass step (de Blok
+    et al. 2024, arXiv:2404.01774 sec 5.1): "the bandpass was smoothed using a 9-channel
+    box-car filter. Any gaps in the bandpass ... were interpolated." Flagged channels are
+    linearly interpolated over first (phase unwrapped before interpolating, to avoid
+    wrap-around artifacts at gap edges), then the whole row is box-car smoothed; any
+    channel this function successfully interpolates over is unflagged afterwards, since it
+    now holds a usable (interpolated + smoothed) value -- this is in addition to, not a
+    replacement for, 'bandpass()''s own 'fillgaps' (which only fills gaps up to a fixed
+    channel width during the solve itself; this covers any gap of any width, and always
+    runs before smoothing so the box-car doesn't convolve across flagged/zero data). A
+    row with fewer than 2 unflagged channels is left untouched (nothing to interpolate
+    from).
+
+    Arguments:
+    ----------
+    caltable : str
+        Path to the bandpass caltable (e.g. 'calfiles.bpassfile').
+    kernel : int
+        Box-car width in channels (e.g. 9). No-op if <= 1."""
+
+    if kernel <= 1:
+        return
+
+    import numpy as np
+    from casatools import table
+    tb = table()
+
+    tb.open(caltable, nomodify=False)
+    cparam = tb.getcol('CPARAM')
+    flag = tb.getcol('FLAG')
+    npol, nchan, nrow = cparam.shape
+    chans = np.arange(nchan)
+    box = np.ones(kernel)
+    #np.convolve(..., mode='same') implicitly zero-pads outside the array, which biases a
+    #plain box/kernel-sized average toward zero near the two band edges (confirmed with a
+    #synthetic test: up to ~45% amplitude error in the first/last few channels for a
+    #9-channel kernel). Normalizing by the actual number of in-bounds samples contributing
+    #to each output channel (rather than dividing by the fixed kernel size everywhere) fixes
+    #this -- edge error dropped to ~1-2% in the same test, matching the interior.
+    counts = np.convolve(np.ones(nchan), box, mode='same')
+
+    for irow in range(nrow):
+        for ipol in range(npol):
+            valid = ~flag[ipol, :, irow]
+            if valid.sum() < 2:
+                continue
+
+            amp = np.abs(cparam[ipol, :, irow])
+            phase = np.unwrap(np.angle(cparam[ipol, valid, irow]))
+
+            amp_filled = np.interp(chans, chans[valid], amp[valid])
+            phase_filled = np.interp(chans, chans[valid], phase)
+
+            amp_smooth = np.convolve(amp_filled, box, mode='same') / counts
+            phase_smooth = np.convolve(phase_filled, box, mode='same') / counts
+
+            cparam[ipol, :, irow] = amp_smooth * np.exp(1j * phase_smooth)
+            flag[ipol, :, irow] = False
+
+    tb.putcol('CPARAM', cparam)
+    tb.putcol('FLAG', flag)
+    tb.close()
+
+    logger.info('Smoothed bandpass caltable "{0}" with a {1}-channel box-car filter.'.format(caltable, kernel))
+
 def get_selfcal_params():
 
     """Parse the '[selfcal]' config section into kwargs for selfcal_part1()/

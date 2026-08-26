@@ -82,7 +82,7 @@ SPW_PREFIX = '*:'
 
 #Set global values for field, crosscal and SLURM arguments copied to config file, and some of their default values
 FIELDS_CONFIG_KEYS = ['fluxfield','bpassfield','phasecalfield','targetfields','extrafields']
-CROSSCAL_CONFIG_KEYS = ['minbaselines','chanbin','width','timeavg','createmms','keepmms','spw','nspw','calcrefant','refant','standard','badants','badfreqranges']
+CROSSCAL_CONFIG_KEYS = ['minbaselines','chanbin','width','timeavg','createmms','keepmms','spw','nspw','calcrefant','refant','standard','badants','badfreqranges','calib_uvrange','bpsmooth_kernel']
 #Phase 2 (Pawsey refactor): 'nloops'/'niter'/'threshold'/'calmode'/'solint' -- the keys that
 #actually vary per self-cal loop -- were replaced by a single 'stages' list (one dict per
 #loop, 'nloops' derived as len(stages)-1); see selfcal_stages.py and REFACTOR_PLAN.md's

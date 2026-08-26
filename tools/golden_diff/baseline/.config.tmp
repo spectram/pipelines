@@ -57,6 +57,8 @@ badants = []
 badfreqranges = [ '933~960MHz',
 	'1163~1299MHz',
 	'1524~1630MHz']
+calib_uvrange = ''
+bpsmooth_kernel = 0
 
 [selfcal]
 stages = [{'mask': None, 'apply_cal': None, 'derive_cal': '', 'niter': 10000, 'threshold': '0.5mJy'}, {'mask': 'prev', 'apply_cal': None, 'derive_cal': 'p', 'niter': 50000, 'threshold': 10, 'solint': '1min'}, {'mask': 'prev', 'apply_cal': 'prev', 'derive_cal': 'ap', 'niter': 80000, 'threshold': 5, 'solint': '10min'}, {'mask': 'prev', 'apply_cal': 'prev', 'derive_cal': '', 'niter': 1000000, 'threshold': 3}]

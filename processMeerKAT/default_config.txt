@@ -68,6 +68,8 @@ badfreqranges = [ '933~960MHz',   # List of bad frequency ranges (to flag)
                   '1163~1299MHz',
                   '1524~1630MHz',
                   '1419.8~1421.3MHz']
+calib_uvrange = ''                # uv range cutoff for delay/bandpass/gain calibration in xx_yy_solve.py (e.g. '>150m', matching de Blok et al. 2024) -- '' means no cut (current behaviour)
+bpsmooth_kernel = 0               # Box-car channel width to smooth the bandpass caltable with, for S/N (matching de Blok et al. 2024) -- 0/1 means off (current behaviour)
 
 [selfcal]
 # Self-calibration stage list: one dict per loop (including loop 0, the initial dirty
