@@ -392,6 +392,14 @@ def main():
 
     args = processMeerKAT.parse_args()
     processMeerKAT.setup_logger(args.config,args.verbose)
+
+    #Unlike every other script (which sets this from $SLURM_JOB_NAME/$SLURM_JOB_ID -- not
+    #available here, since read_ms.py runs directly via 'os.system()' at '-B' time, not inside an
+    #sbatch job), read_ms.py never redirected casalog at all -- so CASA fell back to its own
+    #default 'casa-<timestamp>.log' in whatever directory '-B' was run from. Name it next to the
+    #listobs summary this function writes below, same basename convention as that file.
+    casalog.setlogfile('{0}.casa'.format(os.path.splitext(args.config)[0]))
+
     msmd.open(args.MS)
 
     dopol = args.dopol
