@@ -495,6 +495,31 @@ now three real-CASA verification gaps worth closing first if picking this up for
 `[cont_image]`'s generalized imaging path, selfcal's ported PB-correction (both from the Phase 6 update
 above), and `selfcal_part2.mask_image()`'s SoFiA-mask fix (from this update).
 
+**Done (2026-08-31): Phase 9 — correlator-mode-aware config defaults + per-script SLURM resource registry
++ confirmed parallel cube imaging.** Landed out of sequence (need-driven by the real `HI_p1` production
+run, not because Phase 7/8 were skipped — those are both still open, see below) — full details in the
+"Phase 9" section further down. Headline items: `correlator_modes.py` (new) identifies a MeerKAT
+correlator mode from an MS's native channel width and defaults `[crosscal] nspw`/`chanbin`/`[hi_image]
+imspw` accordingly when `[-H --hi_image]` is set; `slurm_config_registry.py` (new) + a `slurm` dict on each
+`correlator_modes.py` mode entry gives individual scripts (so far just `selfcal_part1`, at its profiled
+real safe point — 2 nodes/8 tasks-per-node, not the 1-node default) their own SLURM resource request
+instead of every script sharing one global `[slurm] nodes`/`ntasks_per_node` value; `image_engine.py`'s
+cube-mode `parallel=False` workaround (for an older CASA MPI bug) removed, confirmed fixed via a real ~20h
+side-by-side serial-vs-parallel test; `selfcal_part2.py` right-sized from a 230GB/128-cpu heuristic
+artifact down to a profiled ~64GB/36-cpu floor; a real bug in `check_scans()` (targeted `nscans/2`,
+undershooting `partition.py`'s actual one-sub-MS-per-scan parallelism) fixed to target `nscans`. All
+verified via `ast.parse()`, standalone logic tests, and `tools/golden_diff.sh` (baseline updated for each
+intentional resource-request change). See `profiling_notes.md` (moved into this repo this session, along
+with `parallelism_comparison.md`) for the underlying real profiling data this phase's defaults are based
+on. **Not yet committed as of this Status update being written** — see `git log`/`git status` for the
+authoritative current state; the commit-hash list at the top of this section stops being maintained partway
+through Phase 3 and should not be treated as a complete history past that point.
+
+**Next step**: Phase 7 remains the next phase in the original sequence, now with an additional real,
+profiled data point to design against (`hi_image.py`'s HI cube imaging genuinely needs more than `work`'s
+24h cap even at a narrowed scope — see `profiling_notes.md`'s HI_p1 section — though still no *confirmed-
+safe* resource/walltime point the way `selfcal_part1`'s is, so don't hardcode one yet).
+
 ---
 
 ## Context
@@ -874,6 +899,106 @@ unused `imspw` (continuum imaging now always uses `spw=''`); moved uvcontsub.py'
 `run_sofia.py`'s SoFiA mask with PyBDSF's own auto-mask in the final SoFiA-driven selfcal loop; and
 de-duplicated `aux_scripts/run_sofia.py`'s local SoFiA-invocation helpers into `sofia_engine.py` (which also
 fixed a silent-failure gap — SoFiA exiting 0 on an internal failure now raises instead of continuing).
+
+## Phase 9 — Correlator-mode-aware config defaults + confirmed parallel cube imaging
+
+- **`correlator_modes.py`** (new, CASA-free like `image_stages.py`/`selfcal_stages.py`): a `MODES` registry
+  keyed by **native channel width in kHz** (see the "bug found and fixed" bullet below for why not
+  channel count/total bandwidth) -- the same per-MS facts `listobs` reports as
+  Ch0(MHz)/ChanWid(kHz)/TotBW(kHz)/CtrFreq(MHz), read here via `msmd` (consistent with `read_ms.py`'s
+  existing `check_spw()`, not by parsing `listobs`'s text output) -- mapping a recognized MeerKAT correlator
+  mode to pipeline defaults (`chanbin`, `nspw`, `imspw` band width). Ships one entry for now, `32K_NE107M`
+  (HI_p1's mode, native 32768 channels / ~107MHz, 0.7km/s native resolution, ~3.265kHz channel width):
+  `chanbin=2` (mstransform channel-averaging during `partition.py`, already wired via the pre-existing
+  `[crosscal] chanbin` -> `preavg` path in `partition.py`'s `mstransform()` call -- no new averaging code
+  needed), `nspw=4`, `imspw_mhz=6`. Add further modes to `MODES` one at a time as they're actually
+  encountered, per user direction.
+- **`read_ms.py`** now calls `correlator_modes.get_spw_summary()`/`identify_mode()` right before its existing
+  `check_spw()` call, but only when `[-H --hi_image]` is set (forwarded into `read_ms.py`'s own invocation
+  from `processMeerKAT.py`'s `default_config()`, alongside `[-F --centralspw]` -- previously neither was
+  passed through). Replaces the old blanket "nspw=1, optionally ±10MHz spw window if -F given" block that
+  used to live in `default_config()` itself (before `read_ms.py` even ran, so it had no MS access and could
+  only use a user-supplied `-F`): now `[crosscal] nspw`/`chanbin` default to the identified mode's values
+  (else nspw=1, chanbin unchanged, matching the old fallback), and `[crosscal] spw` narrows to a ±10MHz
+  window (unchanged width, now applied even without `-F`) and `[hi_image] imspw` to a mode-specific band
+  (else a general ±5MHz), both centred on `-F` if given, else the MS's own centre frequency (`CtrFreq`) --
+  this is a **behavior change for `-H` without `-F`**: previously a no-op (both stayed at
+  `default_config.txt`'s wide continuum defaults / empty `imspw`), now auto-narrows using the MS's own
+  metadata. `check_spw()`'s existing MS-bounds clamp still runs afterward as a safety net either way. Note:
+  this "central frequency" is distinct from `[hi_image]`/`[cont_image]`'s own `restfreq` key (the physical
+  rest frequency of the target line, e.g. HI's 1420.406MHz, used by `tclean`'s velocity-axis conversion and
+  intentionally untouched by this change) -- it only centres the SPW/imspw *windows*. `[selfcal]`'s own
+  `tclean` call doesn't take a `restfreq` argument at all, so there's nothing to expose there.
+- **`image_engine.py`'s cube-mode `parallel=False` workaround removed.** It existed for an older CASA MPI
+  cube-imaging bug (`science_image.py`'s original precedent); a real ~20h side-by-side serial-vs-parallel HI
+  cube imaging test on this container's CASA version (`HI_p1`'s `test_serial`/`test_parallel`, 2 nodes x 8
+  tasks) completed both runs with zero MPI/tclean errors and a narrowing (~18% -> ~2%) wall-clock gap as each
+  job progressed through more channels, confirming the bug is fixed here and cube imaging can now use real
+  MPI parallelism like every other `tclean` call in this pipeline. Audited every other `tclean()` call site
+  for the same pattern: `quick_tclean.py` and `selfcal_part1.py` were already `parallel=True`;
+  `selfcal_part2.py`'s `parallel=False` call is deliberately `niter=0, calcpsf=False, calcres=False` (a
+  model-column predict only, no gridding/deconvolution/PSF work to parallelize) and is unrelated to the cube
+  bug workaround -- left as is.
+- **`default_config.txt`'s `[hi_image]` defaults synced to `HI_p1`'s current, working config**:
+  `wprojplanes` 256->128, `rebin` False->True, `sofia_final_params.scfind.kernelsXY` '0,4,8,12'->'0,4,8,10'.
+  (`[selfcal] wprojplanes` 512->128 was already synced in an earlier, separate uncommitted change on this
+  branch.)
+- **Per-script SLURM resource requests, sourced from `correlator_modes.py`, no hard-coding in
+  `processMeerKAT.py`.** Each `MODES` entry gained a `slurm` dict, `{pipeline_role: {'nodes': N,
+  'ntasks_per_node': M}}` -- e.g. `32K_NE107M`'s entry now carries `selfcal_part1`'s profiled-safe point
+  (`nodes=2, ntasks_per_node=8`; see `selfcal-memory-scaling` notes -- kept at its measured ~10-13% headroom,
+  not shaved any tighter, for tolerance against a differently-configured MS). `read_ms.py` identifies the
+  correlator mode **unconditionally** now (not gated on `-H` -- `selfcal_part1` runs whenever `[-2 --do2GC]`
+  is set, independent of HI imaging), and persists only the matched *name* into `[run] correlator_mode`
+  (`''` for an unrecognized mode or a config predating this). New `slurm_config_registry.py` holds the
+  resolution logic (`get_override(pipeline_role, mode_name)`) -- no per-script numbers of its own, purely a
+  lookup into `correlator_modes.MODES[...]['slurm']` by the persisted mode name (`get_mode_by_name()`, the
+  by-name counterpart to `identify_mode()`'s by-(nchan,bandwidth) lookup, since `write_jobs()` at `-R` time
+  has no MS/msmd access to re-derive the mode). `write_jobs()` reads `[run] correlator_mode` once and, for
+  each threadsafe script, resolves its override and passes it into `write_sbatch()` -- a script with no
+  profiled data for the identified mode (or no mode identified at all) is completely unaffected, falling
+  back to the run's plain configured `[slurm] nodes`/`ntasks_per_node`, identical to before this mechanism
+  existed. (An earlier version of this persisted resolved nodes/tasks numbers into a new `[slurm_overrides]`
+  config section instead -- reverted per user direction: the numbers must come from `correlator_modes.py`
+  alone, config only carries the identified mode's *name*.) `read_ms.py`'s pre-existing scan-count-driven
+  sizing (`check_scans()`, for `partition.py`'s own MMS-splitting parallelism) still writes into the shared
+  global `[slurm] nodes`/`ntasks_per_node` as it always did -- this session didn't change that path; it can
+  still clobber e.g. `selfcal_part1`'s own mode-sourced override for a script list where both run, since
+  `check_scans()`'s write happens first and `write_jobs()`'s per-script override is resolved independently
+  per script (so `selfcal_part1`'s override still applies correctly regardless of what `check_scans()` wrote
+  to the global value -- only `partition.py` itself, which has no registered override, is affected by
+  `check_scans()`'s adjustment, same as before).
+- **Bug found and fixed via a real `-B` run**: `identify_mode()` originally matched `(nchan, total bandwidth)`
+  against `MODES` -- wrong, confirmed live against `P1`'s `-B` output on the real production MS: `nchan=6127,
+  TotBW=20.0MHz` (not `32768`/`107MHz`) failed to match `32K_NE107M` at all, even though it clearly *is* that
+  mode (MeerKAT's SDP had only archived a ~20MHz window around the target line, not the mode's full native
+  band). `nchan`/total bandwidth vary per-MS depending on how much of the band was delivered; the mode's
+  native **channel width** (`ChanWid`) doesn't -- `identify_mode()` now matches on that alone (`MODES` keyed
+  by `round(native ChanWid in kHz, 3)`, `CHANWID_TOLERANCE_KHZ=0.05`). Confirmed the real MS's derived
+  ChanWid (`totbw_MHz*1000/nchan`) reproduces `32K_NE107M`'s native 3.265380859375kHz exactly, since a
+  sub-band selection preserves the native grid spacing.
+- **Second real bug found and fixed via the same `-B` run**: `read_ms.py`'s `check_scans()` targeted
+  `int(nscans/2)` as its "ideal" total thread count, undershooting -- `do_partition()` creates exactly one
+  sub-MS per scan (`mstransform(..., numsubms=msmd.nscans(), ...)`), so the natural parallelism for that
+  step is one rank per scan (`nscans` itself), not half. Confirmed live: this MS's real 18-scan count
+  produced a clearly-too-low "1 node/9 tasks" recommendation before the fix; now targets `nscans` directly
+  (lands on 2 nodes/16 tasks-per-node for this MS's `dopol=False` case -- overshoots past 18 to the next
+  achievable tier, since the existing stepping loop always adds a whole node before increasing tasks-per-
+  node; that stepping preference itself wasn't changed, only the target it steps toward).
+- **`selfcal_part2.py` right-sized** (was requesting `230GB`/`128` cpus for a step that profiled at
+  4.96-41.2GB -- see `profiling_notes.md`'s HI_p1 section): `script_registry.py`'s `cpu_intensive` flipped
+  to `False` (this script is single/lightly-threaded PyBDSF + simple CASA mask ops, occasionally a non-
+  parallel predict-only `tclean`+`gaincal` -- none of it scales with core count the way `selfcal_part1`'s
+  real MPI-parallel deep clean does; `cpu_intensive=True` was only pulling `cpus-per-task` to 128 because
+  `tasks=1`, which in turn pulled `--mem` to the full 230GB node cap via the shared mem/cpu ratio). Given a
+  new floor instead, mirroring the pre-existing `run_sofia`-specific block in `write_sbatch()`: `mem=64GB`
+  (comfortable headroom above the profiled 41.2GB peak, regardless of what `[slurm] mem` happens to be
+  configured to), `cpus` derived from that via the existing shared-node ratio (36, not 128). Verified via
+  `golden_diff.sh`: `--cpus-per-task=128`/`--mem=230GB` -> `--cpus-per-task=36`/`--mem=64GB`.
+- **ToDo, deferred**: `hi_image.py`'s own `slurm` entry for `32K_NE107M`. The 24h serial-vs-parallel test
+  didn't produce a *confirmed-safe* number the way `selfcal_part1`'s did (only "24h on `work` isn't enough at
+  this scale", not what would be) -- don't add a guessed entry; revisit once a real run actually completes
+  and a genuine safe nodes/tasks/time/partition point can be profiled, the same way `selfcal_part1`'s was.
 
 ## Verification
 
