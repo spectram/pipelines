@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 import config_parser
 import bookkeeping
 import script_registry
+import slurm_config_registry
 from shutil import copyfile
 from copy import deepcopy
 import logging
@@ -415,8 +416,8 @@ def parse_args():
     parser.add_argument("-P","--dopol", action="store_true", required=False, default=False, help="Perform polarization calibration in the pipeline [default: False].")
     parser.add_argument("-2","--do2GC", action="store_true", required=False, default=False, help="Perform (2GC) self-calibration in the pipeline [default: False].")
     parser.add_argument("-I","--science_image", action="store_true", required=False, default=False, help="Create a science image [default: False].")
-    parser.add_argument("-H","--hi_image", action="store_true", required=False, default=False, help="Create an HI (spectral-line) cube image, independent of [-I --science_image] -- both can be set together [default: False]. When set, [crosscal] nspw defaults to 1 (no SPW-splitting) instead of default_config.txt's multi-band continuum default.")
-    parser.add_argument("-F","--centralspw", metavar="MHz", required=False, type=float, default=None, help="Central frequency (MHz) to define a +-10MHz [crosscal] spw window around (spw='*:(F-10)~(F+10)MHz'), e.g. for centring on a redshifted HI line. Only applied when [-H --hi_image] is also set -- ignored (with a warning) otherwise [default: None, i.e. fall back to default_config.txt's spw, clamped to the input MS's own bounds by read_ms.py].")
+    parser.add_argument("-H","--hi_image", action="store_true", required=False, default=False, help="Create an HI (spectral-line) cube image, independent of [-I --science_image] -- both can be set together [default: False]. When set, read_ms.py identifies the MS's MeerKAT correlator mode (see correlator_modes.py) and defaults [crosscal] nspw/chanbin and [hi_image] imspw accordingly (falling back to nspw=1, unchanged chanbin, and a general +-5MHz imspw band for an unrecognized mode), and narrows [crosscal] spw to a +-10MHz window centred on [-F --centralspw] (or, if not given, the MS's own centre frequency).")
+    parser.add_argument("-F","--centralspw", metavar="MHz", required=False, type=float, default=None, help="Central frequency (MHz) to centre [crosscal] spw (+-10MHz) and [hi_image] imspw (see correlator_modes.py) around, e.g. for centring on a redshifted HI line. Only applied when [-H --hi_image] is also set -- ignored (with a warning) otherwise [default: None, i.e. read_ms.py falls back to the input MS's own centre frequency].")
     parser.add_argument("--contsub", action="store_true", required=False, default=False, help="Run uvsub.py/uvcontsub.py to produce continuum-subtracted visibilities, independent of [-H --hi_image] (e.g. for contsub'd data without full cube imaging) [default: False].")
     parser.add_argument("-x","--nofields", action="store_true", required=False, default=False, help="Do not read the input MS to extract field IDs [default: False].")
     parser.add_argument("-j","--justrun", action="store_true", required=False, default=False, help="Just run the pipeline, don't rebuild each job script if it exists [default: False].")
@@ -768,6 +769,15 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         params['mem'] = min(params['mem'], int(params['cpus'] * tasks * cluster['mem_per_cpu_mb_shared'] / 1024))
         params['time'] = '02:00:00'
 
+    #selfcal_part2's real memory need doesn't scale with the run's configured [slurm] mem the way
+    #a CASA-parallel script's does (see script_registry.py's cpu_intensive=False comment on this
+    #script) -- give it a floor high enough to comfortably clear its profiled real peak (41.2GB,
+    #HI_p1's predict+gaincal branch) regardless of what [slurm] mem happens to be configured to,
+    #without requesting anywhere near the 230GB the old cpu_intensive=True heuristic used to.
+    if 'selfcal_part2' in script:
+        params['mem'] = max(params['mem'], 64)
+        params['cpus'] = max(params['cpus'], math.ceil(params['mem'] * 1024 / cluster['mem_per_cpu_mb_shared'] / tasks))
+
     #Use xvfb for plotting scripts
     properties = script_registry.get_properties(script)
     plot = properties.plot
@@ -852,9 +862,21 @@ def expand_selfcal_loop_scripts(scripts,config,handle_run_sofia=False):
     config : str
         Path to config file.
     handle_run_sofia : bool, optional
-        Also move a 'run_sofia.sbatch' immediately following the selfcal pair inside the
-        replicated block, so it runs once per loop rather than only after the last one
-        (write_master()'s behaviour; write_spw_master() does not do this).
+        Move a 'run_sofia.sbatch' immediately following the selfcal pair to instead run once,
+        right before the *final* loop's selfcal_part1/selfcal_part2 pair (rather than after
+        every loop has already finished). This is not cosmetic reordering: run_sofia.py reads
+        [selfcal] loop (already advanced to nloops by the just-completed second-to-last
+        loop's selfcal_part2) and builds its SoFiA mask from imagename(loop-1) -- i.e. the
+        most recently completed loop's image -- then writes that mask path into
+        [selfcal] usermask. bookkeeping.get_selfcal_args() only picks up usermask for a loop
+        where loop >= nloops, so run_sofia's output is only useful if it runs BEFORE that
+        final loop's selfcal_part1, not after it (see selfcal_part2.mask_image()'s
+        is_sofia_final_mask check). This also restores the final loop's own selfcal_part2
+        call (previously dropped entirely when this flag was omitted), which is what
+        populates the MODEL column via a predict-only tclean that uvsub.py's continuum
+        subtraction depends on -- both write_master() and write_spw_master() now pass this
+        (write_spw_master() previously didn't, silently breaking the SoFiA final mask AND
+        dropping the final loop's model-column predict for every nspw>1 run).
 
     Returns:
     --------
@@ -1081,7 +1103,7 @@ def write_spw_master(filename,config,SPWs,precal_scripts,postcal_scripts,submit,
 
     if any(script_registry.get_properties(s).pipeline_role == 'concat' for s in postcal_scripts):
         master.write('echo Will concatenate MSs/MMSs and create quick-look continuum cube across all SPWs for all fields from \"{0}\".\n'.format(config))
-    scripts = expand_selfcal_loop_scripts(postcal_scripts[:], config)
+    scripts = expand_selfcal_loop_scripts(postcal_scripts[:], config, handle_run_sofia=True)
     scripts = expand_hi_combo_scripts(scripts, config)
     scripts = expand_cont_image_stage_scripts(scripts, config)
 
@@ -1418,13 +1440,29 @@ def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scri
     cluster_kwargs = get_cluster_kwargs(config)
     pad_length = len(name)
 
+    #Correlator mode identified by read_ms.py at '-B' time (see correlator_modes.py), persisted as
+    #a name string in '[run] correlator_mode' -- '' for a config predating this, or an MS whose
+    #mode wasn't recognized. No MS/msmd access at '-R' time, so this is read back rather than
+    #re-derived.
+    correlator_mode = config_parser.get_key(config, 'run', 'correlator_mode')
+
     #Write sbatch file for each input python script
     for i,script in enumerate(scripts):
         jobname = os.path.splitext(os.path.split(script)[1])[0]
 
         #Use input SLURM configuration for threadsafe tasks, otherwise call srun with single node and single thread
         if threadsafe[i]:
-            write_sbatch(script,'--config {0}'.format(TMP_CONFIG),nodes=nodes,tasks=ntasks_per_node,mem=mem,plane=plane,exclude=exclude,mpi_wrapper=mpi_wrapper,container=containers[i],partition=partition,
+            #Per-script resource override, sourced from the identified correlator mode's own
+            #profiled 'slurm' data (see correlator_modes.py/slurm_config_registry.py) -- e.g.
+            #selfcal_part1's profiled-safe nodes/tasks point. All-None (no change) for any script
+            #the identified mode has no profiled data for, or when no mode was identified -- those
+            #keep the run's configured [slurm] values, unchanged from before this mechanism existed.
+            role = script_registry.get_properties(script).pipeline_role
+            override = slurm_config_registry.get_override(role, mode_name=correlator_mode)
+            script_nodes = override.nodes if override.nodes is not None else nodes
+            script_tasks = override.ntasks_per_node if override.ntasks_per_node is not None else ntasks_per_node
+
+            write_sbatch(script,'--config {0}'.format(TMP_CONFIG),nodes=script_nodes,tasks=script_tasks,mem=mem,plane=plane,exclude=exclude,mpi_wrapper=mpi_wrapper,container=containers[i],partition=partition,
                         time=time,name=jobname,runname=name,SPWs=crosscal_kwargs['spw'],nspw=crosscal_kwargs['nspw'],account=account,reservation=reservation,modules=modules,justrun=justrun,cluster=cluster_kwargs)
         else:
             write_sbatch(script,'--config {0}'.format(TMP_CONFIG),nodes=1,tasks=1,mem=mem,plane=1,mpi_wrapper='srun',container=containers[i],partition=partition,time=time,name=jobname,
@@ -1512,20 +1550,14 @@ def default_config(arg_dict):
 
         config_parser.overwrite_config(filename, conf_dict={'postcal_scripts' : scripts}, conf_sec='slurm')
 
-    #default_config.txt's shipped [crosscal] spw/nspw are tuned for a full multi-band
-    #continuum observation (a broad multi-range spw, nspw=11 for parallelism across those
-    #ranges) -- neither suits a narrow-band HI/spectral-line observation. -H defaults nspw to
-    #1 (no SPW-splitting; HI observations are typically a single already-narrow band) and, if
-    #the user also gives [-F --centralspw], overwrites spw to a +-10MHz window centred on it.
-    #Set *before* read_ms.py runs below, so its own check_spw() clamp (against the real MS's
-    #bounds) still applies as a safety net on top of this.
-    if arg_dict['hi_image']:
-        config_parser.overwrite_config(filename, conf_dict={'nspw' : 1}, conf_sec='crosscal')
-        if arg_dict['centralspw'] is not None:
-            low = round(arg_dict['centralspw'] - 10, 4)
-            high = round(arg_dict['centralspw'] + 10, 4)
-            config_parser.overwrite_config(filename, conf_dict={'spw' : "'*:{0}~{1}MHz'".format(low, high)}, conf_sec='crosscal')
-    elif arg_dict['centralspw'] is not None:
+    #default_config.txt's shipped [crosscal] spw/nspw are tuned for a full multi-band continuum
+    #observation (a broad multi-range spw, nspw=11 for parallelism across those ranges) -- neither
+    #suits a narrow-band HI/spectral-line observation. Working out real per-mode defaults (nspw,
+    #chanbin, spw/imspw window width) needs the MS's own correlator-mode facts (channel count,
+    #bandwidth, centre frequency) -- see correlator_modes.py -- so that happens inside read_ms.py
+    #below (which already opens the MS via msmd), not here. [-H --hi_image]/[-F --centralspw] are
+    #forwarded into read_ms.py's own invocation for that purpose.
+    if not arg_dict['hi_image'] and arg_dict['centralspw'] is not None:
         logger.warning("[-F --centralspw] was set but [-H --hi_image] wasn't -- ignoring, since it only defines the spw window for HI cube imaging.")
 
     if not arg_dict['nofields']:
@@ -1541,6 +1573,10 @@ def default_config(arg_dict):
             params += ' -P'
         if arg_dict['verbose']:
             params += ' -v'
+        if arg_dict['hi_image']:
+            params += ' -H'
+            if arg_dict['centralspw'] is not None:
+                params += ' -F {0}'.format(arg_dict['centralspw'])
         command = write_command('read_ms.py', params, mpi_wrapper=mpi_wrapper, container=arg_dict['container'],logfile=False, mpi=False)
         logger.info('Extracting field IDs from MeasurementSet "{0}" using CASA.'.format(MS))
         logger.debug('Using the following command:\n\t{0}'.format(command))

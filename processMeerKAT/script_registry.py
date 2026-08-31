@@ -90,7 +90,16 @@ REGISTRY = {
     'concat.py':         ScriptProperties(pipeline_role='concat'),
     'plotcal_spw.py':    ScriptProperties(plot=True, pipeline_role='plotcal_spw'),
     'selfcal_part1.py':  ScriptProperties(cpu_intensive=True, exclusive_node=True, long_running=True, pipeline_role='selfcal_part1'),
-    'selfcal_part2.py':  ScriptProperties(cpu_intensive=True, long_running=True, pipeline_role='selfcal_part2'),
+    #cpu_intensive=False (not True, unlike selfcal_part1): this is single/lightly-threaded PyBDSF
+    #source-finding plus simple CASA mask ops, and (for a loop with derive_cal != '', or the final
+    #loop) a non-parallel (parallel=False) predict-only tclean(niter=0)+gaincal -- none of that
+    #scales with core count the way selfcal_part1's real MPI-parallel deep clean does. Previously
+    #cpu_intensive=True pulled this to 128 cpus-per-task (tasks=1, cpu_intensive's heuristic is
+    #cpus_per_node/tasks), which in turn pulled --mem up to the full 230GB node cap via the shared
+    #mem/cpu ratio -- confirmed via real profiling (HI_p1) this was ~2-18% utilized (4.96GB for the
+    #derive_cal=='' skip-branch, 38-41GB for the predict+gaincal branches) -- see
+    #write_sbatch()'s own selfcal_part2-specific mem floor (profiled-informed, not this heuristic).
+    'selfcal_part2.py':  ScriptProperties(cpu_intensive=False, long_running=True, pipeline_role='selfcal_part2'),
     'run_sofia.py':      ScriptProperties(pipeline_role='run_sofia'),
     'uvsub.py':          ScriptProperties(pipeline_role='uvsub'),
     'uvcontsub.py':      ScriptProperties(requires_mms=True, pipeline_role='uvcontsub'),

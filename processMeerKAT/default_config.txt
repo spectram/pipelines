@@ -88,7 +88,7 @@ loop = 0                          # If nonzero, adds this number to nloops to na
 cell = '1.5arcsec'
 robust = -0.5
 imsize = [6144, 6144]
-wprojplanes = 512
+wprojplanes = 128
 nterms = 1                        # Number of taylor terms
 gridder = 'wproject'
 deconvolver = 'multiscale'
@@ -164,12 +164,12 @@ cell = '2.0arcsec'
 imsize = [2048, 2048]
 scales = [0, 3, 5, 10]
 gridder = 'wproject'
-wprojplanes = 256
+wprojplanes = 128
 deconvolver = 'multiscale'
 weighting = 'briggs'
 restfreq = '1420.406MHz'           # HI line (change for other emission lines - e.g. OH) -- own copy, not read from [cont_image]
-imspw = ''                        # SPW to select for imaging -- own copy, not read from [cont_image]
-rebin = False                     # Rebin the final stage's cube before export?
+imspw = ''                        # SPW to select for imaging -- own copy, not read from [cont_image]. When [-H --hi_image] is set, read_ms.py (via correlator_modes.py) fills this in with a default band centred on [-F --centralspw] or the MS's own centre frequency -- see correlator_modes.py.
+rebin = True                      # Rebin the final stage's cube before export?
 rebin_factor = [2, 2, 1]          # imrebin() factor, only used when rebin=True
 pb_correct = False                # Apply katbeam PB-correction to the final stage's cube before export?
 pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
@@ -181,7 +181,7 @@ pbband = 'LBand'                  # Which band to use to generate the PB - one o
 sofia_mask_params = {'scfind.kernelsXY': '0, 4, 8', 'reliability.threshold': 0.9,
                       'output.writeCatASCII': False, 'output.writeMoments': False,
                       'output.writeCubelets': False, 'output.writePV': False}
-sofia_final_params = {'scfind.kernelsXY': '0, 4, 8, 12', 'reliability.threshold': 0.95,
+sofia_final_params = {'scfind.kernelsXY': '0, 4, 8, 10', 'reliability.threshold': 0.95,
                        'output.writeCatASCII': True, 'output.writeMoments': True,
                        'output.writeCubelets': True, 'output.writePV': True}
 combo = 0                         # Internal: current index into 'hi_combos', advanced by hi_sofia.py

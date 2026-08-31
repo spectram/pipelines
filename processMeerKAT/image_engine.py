@@ -90,10 +90,12 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
         calcpsf=True, mask=maskarg, usemask=usemask, pbcor=False, pblimit=-1,
         restoringbeam=restoringbeam, gain=0.1, parallel=True, outlierfile=outlierfile)
 
-    #Cube-specific tclean bug workaround, already established by science_image.py: disable
-    #MPI parallelism for cube imaging.
+    #Cube-specific tclean kwargs. parallel=True (the kwargs default above) was disabled here for
+    #cube mode by an older CASA MPI cube-imaging bug workaround (science_image.py's original
+    #precedent); confirmed fixed on this container's CASA version by a real ~20h side-by-side
+    #serial-vs-parallel HI cube imaging test (no MPI errors either run, ~2% wall-clock gap by the
+    #time each ran a comparable number of channels) -- see HI_p1's test_serial/test_parallel.
     if specmode == 'cube':
-        kwargs['parallel'] = False
         kwargs['veltype'] = 'optical'
         kwargs['outframe'] = 'bary'
 

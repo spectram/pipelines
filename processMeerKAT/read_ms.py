@@ -8,6 +8,7 @@ import numpy as np
 
 import processMeerKAT
 import config_parser
+import correlator_modes
 
 from casatasks import *
 from casatools import msmetadata,table,measures,quanta
@@ -202,8 +203,13 @@ def check_scans(MS,nodes,tasks,dopol):
     threads : dict
         A dictionary with updated values for nodes and tasks per node to match the number of scans."""
 
+    #do_partition() creates exactly one sub-MS per scan when createmms=True (mstransform(...,
+    #numsubms=msmd.nscans(), ...)) -- the natural degree of parallelism for that step is one rank
+    #per scan, i.e. nscans itself. Previously targeted nscans/2 here, which undershot: confirmed
+    #against a real production run (HI_p1) whose own working partition.sbatch used more threads
+    #than that halved target implied.
     nscans = msmd.nscans()
-    limit = int(nscans/2)
+    limit = nscans
 
     if abs(nodes * tasks - limit) > 0.1*limit:
         logger.warning('The number of threads ({0} node(s) x {1} task(s) = {2}) is not ideal compared to the number of scans ({3}) for "{4}".'.format(nodes,tasks,nodes*tasks,nscans,MS))
@@ -408,9 +414,57 @@ def main():
 
     check_refant(args.MS, refant, args.config, warn=True)
     threads = check_scans(args.MS,args.nodes,args.ntasks_per_node,dopol)
+
+    #Identify the MS's own MeerKAT correlator mode (correlator_modes.py) from its spectral facts
+    #(the same Ch0/ChanWid/TotBW/CtrFreq listobs reports) -- unconditionally (not gated on -H),
+    #since a mode's profiled SLURM resource data (below) can apply to scripts like selfcal_part1
+    #that run independent of HI imaging. Only the name is persisted (into '[run] correlator_mode')
+    #-- write_jobs() looks it up again by name at '-R' time, when there's no MS/msmd access to
+    #re-derive it, to resolve each script's resource request (slurm_config_registry.py). A config
+    #predating this, or an MS whose mode isn't recognized, gets '' -- every consumer of this value
+    #treats that as "no mode identified", falling back to today's plain defaults unchanged.
+    nchan, ch0_mhz, chanwid_khz, totbw_mhz, ctrfreq_mhz = correlator_modes.get_spw_summary(msmd)
+    mode = correlator_modes.identify_mode(chanwid_khz)
+    if mode is not None:
+        logger.info("Identified MeerKAT correlator mode '{0}' (nchan={1}, ChanWid={2:.3f}kHz, TotBW={3:.1f}MHz, CtrFreq={4:.3f}MHz).".format(
+            mode['name'], nchan, chanwid_khz, totbw_mhz, ctrfreq_mhz))
+    else:
+        logger.info("MeerKAT correlator mode not recognized (nchan={0}, ChanWid={1:.3f}kHz, TotBW={2:.1f}MHz, CtrFreq={3:.3f}MHz) -- add it to correlator_modes.py's MODES for mode-specific defaults.".format(
+            nchan, chanwid_khz, totbw_mhz, ctrfreq_mhz))
+
+    #When [-H --hi_image] is set, additionally use the identified mode (if any) to default
+    #[crosscal] nspw/chanbin and [hi_image] imspw for a narrow-band HI/spectral-line observation,
+    #in place of default_config.txt's continuum-tuned defaults. Centred on [-F --centralspw] if
+    #given, else the MS's own centre frequency -- narrows [crosscal] spw too (below), which
+    #check_spw() then still clamps to the MS's real bounds as a safety net, same as the
+    #pre-existing [-F --centralspw] mechanism this replaces.
+    if args.hi_image:
+        centralfreq_mhz = args.centralspw if args.centralspw is not None else ctrfreq_mhz
+
+        if mode is not None:
+            logger.info("Defaulting [crosscal] nspw={0}, chanbin={1}, [hi_image] imspw width={2}MHz for correlator mode '{3}'.".format(
+                mode['nspw'], mode['chanbin'], mode['imspw_mhz'], mode['name']))
+            config_parser.overwrite_config(args.config, conf_dict={'nspw': mode['nspw'], 'chanbin': mode['chanbin']}, conf_sec='crosscal')
+            imspw_halfwidth = mode['imspw_mhz'] / 2.
+        else:
+            logger.warning("Falling back to nspw=1, unchanged chanbin, and a +-{0}MHz [hi_image] imspw band, since the correlator mode wasn't recognized.".format(correlator_modes.GENERAL_IMSPW_MHZ / 2.))
+            config_parser.overwrite_config(args.config, conf_dict={'nspw': 1}, conf_sec='crosscal')
+            imspw_halfwidth = correlator_modes.GENERAL_IMSPW_MHZ / 2.
+
+        low = round(centralfreq_mhz - 10, 4)
+        high = round(centralfreq_mhz + 10, 4)
+        config_parser.overwrite_config(args.config, conf_dict={'spw': "'*:{0}~{1}MHz'".format(low, high)}, conf_sec='crosscal')
+
+        imspw_low = round(centralfreq_mhz - imspw_halfwidth, 4)
+        imspw_high = round(centralfreq_mhz + imspw_halfwidth, 4)
+        config_parser.overwrite_config(args.config, conf_dict={'imspw': "'*:{0}~{1}MHz'".format(imspw_low, imspw_high)}, conf_sec='hi_image')
+    elif args.centralspw is not None:
+        logger.warning("[-F --centralspw] was set but [-H --hi_image] wasn't -- ignoring, since it only defines the spw window for HI cube imaging.")
+
     SPW = check_spw(args.config,msmd)
 
-    config_parser.overwrite_config(args.config, conf_dict={'dopol' : dopol}, conf_sec='run', sec_comment='# Internal variables for pipeline execution')
+    config_parser.overwrite_config(args.config, conf_dict={'dopol' : dopol, 'correlator_mode': "'{0}'".format(mode['name'] if mode is not None else '')},
+        conf_sec='run', sec_comment='# Internal variables for pipeline execution')
     config_parser.overwrite_config(args.config, conf_dict=threads, conf_sec='slurm')
     config_parser.overwrite_config(args.config, conf_dict=fields, conf_sec='fields')
     config_parser.overwrite_config(args.config, conf_dict={'spw' : "'{0}'".format(SPW)}, conf_sec='crosscal')
