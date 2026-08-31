@@ -62,8 +62,19 @@ MODES = {
         #niter=1,000,000 deep clean) at 199-207 GiB/node against a 230GB budget -- kept at that
         #measured ~10-13% headroom rather than shaved any tighter, for tolerance against a larger
         #or differently-configured MS than the one this was profiled on.
+        #hi_image's point (2 nodes/8 tasks-per-node, matching selfcal_part1's -- same rationale:
+        #tclean's MPI parallelism replicates image-side buffers per rank, so ranks-per-node is the
+        #lever) is TESTED, not fully profiled the way selfcal_part1's is above: a real ~20h
+        #side-by-side serial-vs-parallel run at this scale completed zero MPI/tclean errors either
+        #way, but neither run finished even one stage within 24h, so there's no confirmed-safe
+        #wall-clock point yet -- only that this node/task split itself is safe to run. hi_image.py
+        #was also 'threadsafe=False' in postcal_scripts until now (a separate, pre-existing gap --
+        #this nodes/tasks entry had no effect until that was fixed), so real end-to-end wall-clock
+        #data at this split still doesn't exist. Revisit [slurm] time/partition for this role once
+        #a real run actually completes.
         'slurm': {
             'selfcal_part1': {'nodes': 2, 'ntasks_per_node': 8},
+            'hi_image': {'nodes': 2, 'ntasks_per_node': 8},
         },
     },
 }
