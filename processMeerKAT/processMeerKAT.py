@@ -275,7 +275,7 @@ PRECAL_SCRIPTS = [('calc_refant.py',False,''),('partition.py',True,'')] #Scripts
 #science_image.py entry, later filtered out again by -I/-H gating) regardless of -H/-I flags.
 POSTCAL_SCRIPTS = [('concat.py',False,''),('plotcal_spw.py', False, ''),('selfcal_part1.py',True,''),('selfcal_part2.py',False,''), \
 ('run_sofia.py', False, SOFIA_CONTAINER), ('uvsub.py', False, ''), ('uvcontsub.py', True, ''), \
-('hi_image.py', False, ''), ('hi_sofia.py', False, SOFIA_CONTAINER), ('science_image.py', False, ''), ('cont_sofia.py', False, SOFIA_CONTAINER)] #Scripts run after calibration at top level directory when nspw > 1
+('hi_image.py', True, ''), ('hi_sofia.py', False, SOFIA_CONTAINER), ('science_image.py', False, ''), ('cont_sofia.py', False, SOFIA_CONTAINER)] #Scripts run after calibration at top level directory when nspw > 1
 SCRIPTS = [ ('validate_input.py',False,''),
             ('flag_round_1.py',True,''),
             ('calc_refant.py',False,''),
