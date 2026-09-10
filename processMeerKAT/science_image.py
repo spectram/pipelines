@@ -32,7 +32,17 @@ logging.basicConfig(format="%(asctime)-15s %(levelname)s: %(message)s", level=lo
 
 def main(args, taskvals):
 
+    #Explicit [cont_image] vis override always wins. Otherwise prefer the pre-uvsub backup
+    #(bookkeeping.get_post_selfcal_vis()) over '[data] vis' directly -- uvsub.py modifies
+    #'[data] vis' 's CORRECTED_DATA in place (continuum model subtracted), and the default
+    #postcal_scripts order runs uvsub.py/uvcontsub.py *before* science_image.py, so reading
+    #'[data] vis' here would silently image continuum-subtracted data whenever that ran first.
+    #Falls back to '[data] vis' only when uvsub.py hasn't run at all (post_selfcal_vis blank),
+    #in which case '[data] vis' is still the correct, untouched source. See REFACTOR_PLAN.md's
+    #Phase 10b write-up.
     vis = va(taskvals, 'cont_image', 'vis', str, default='')
+    if vis == '':
+        vis = bookkeeping.get_post_selfcal_vis(args['config'])
     if vis == '':
         vis = va(taskvals, 'data', 'vis', str)
 

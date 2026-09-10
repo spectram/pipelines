@@ -59,6 +59,31 @@ def get_continuum_vis(config):
     taskvals, _ = config_parser.parse_config(config)
     return config_parser.validate_args(taskvals, 'run', 'continuum_vis', str, default='')
 
+def get_post_selfcal_vis(config):
+
+    """Return the path to the pre-uvsub backup of '[data] vis' ('[run] post_selfcal_vis', a
+    shutil.copytree() snapshot uvsub.py makes of the fully self-calibrated MS -- before uvsub()
+    modifies '[data] vis' 's CORRECTED_DATA in place, subtracting the continuum model). This is
+    the correct source for continuum imaging: 'DATA' is never touched by applycal() (fixed CASA
+    behaviour for the classic applycal task), so it holds pre-calibration visibilities, not
+    selfcal-improved ones -- there is no way to recover the pre-uvsub CORRECTED_DATA except from
+    this backup. See REFACTOR_PLAN.md's Phase 10b write-up for the bug this closes: science_image.py
+    previously fell through to '[data] vis' directly whenever uvsub.py/uvcontsub.py ran first in
+    postcal_scripts (the default order), silently imaging continuum-subtracted data.
+
+    Arguments:
+    ----------
+    config : str
+        Path to config file.
+
+    Returns:
+    --------
+    post_selfcal_vis : str
+        Path to the pre-uvsub backup MS ('' if uvsub.py hasn't run yet)."""
+
+    taskvals, _ = config_parser.parse_config(config)
+    return config_parser.validate_args(taskvals, 'run', 'post_selfcal_vis', str, default='')
+
 def get_calfiles(visname, caldir):
         base = os.path.splitext(visname)[0]
         kcorrfile = os.path.join(caldir,base + '.kcal')
