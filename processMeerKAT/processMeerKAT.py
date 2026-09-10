@@ -426,6 +426,8 @@ def parse_args():
     run_args = parser.add_mutually_exclusive_group(required=True)
     run_args.add_argument("-B","--build", action="store_true", required=False, default=False, help="Build config file using input MS.")
     run_args.add_argument("-R","--run", action="store_true", required=False, default=False, help="Run pipeline with input config file.")
+    run_args.add_argument("--combine", metavar="dir", required=False, type=str, default=None,
+                        help="Combine multiple tracks' per-track output (auto-discovered as 'P<N>'-named subdirectories of this directory) into one MS in a new 'M2' subdirectory, for subsequent imaging -- see combine_tracks.py and REFACTOR_PLAN.md's Phase 10 write-up. Combines each track's [-H --hi_image]-style contsub'd output when [-H --hi_image] is also set, or its pre-uvsub self-calibrated backup otherwise (continuum imaging) [default: None].")
     run_args.add_argument("-V","--version", action="store_true", required=False, default=False, help="Display the version of this pipeline and quit.")
     run_args.add_argument("-L","--license", action="store_true", required=False, default=False, help="Display this program's license and quit.")
 
@@ -1482,6 +1484,66 @@ def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scri
         write_master(MASTER_SCRIPT,config,scripts=scripts,submit=submit,pad_length=pad_length,verbose=verbose,echo=echo,dependencies=dependencies,slurm_kwargs=kwargs)
 
 
+def run_combine(wdir, hi_image, arg_dict):
+
+    """Discover 'P<N>'-named track directories under 'wdir', resolve each one's source
+    visibility, write a trimmed combined config, and generate the sbatch that actually runs
+    the virtualconcat -- see combine_tracks.py and REFACTOR_PLAN.md's Phase 10 write-up. Does
+    not submit anything -- mirrors '-B' then '-R' both stopping short of submission, so the
+    generated config/sbatch can be reviewed before a real (potentially expensive) compute job
+    runs.
+
+    Arguments:
+    ----------
+    wdir : str
+        Parent directory containing the per-track run directories.
+    hi_image : bool
+        Combine for HI imaging (True, uses each track's '.contsub' output) or continuum
+        imaging (False, uses each track's pre-uvsub 'post_selfcal_vis' backup -- see Phase
+        10b's science_image.py fix, without which this source isn't trustworthy).
+    arg_dict : dict
+        Parsed CLI args (vars(args)) -- reuses the same account/partition/time/container/
+        modules already used for '-B'/'-R', so '--combine' doesn't need its own separate set
+        of resource flags."""
+
+    #Imported lazily, not at module level -- combine_tracks.py imports config_parser, which
+    #imports processMeerKAT (this module); importing it at processMeerKAT.py's own top level
+    #would be a circular import at load time.
+    import combine_tracks
+
+    tracks = combine_tracks.discover_tracks(wdir)
+    logger.info('Discovered {0} track(s) under "{1}": {2}'.format(
+        len(tracks), wdir, [os.path.basename(t) for t in tracks]))
+
+    source_vis = [combine_tracks.resolve_track_vis(t, hi_image) for t in tracks]
+
+    output_dir = os.path.join(wdir, 'M2')
+    output_vis = '{0}_combined.mms'.format(os.path.basename(os.path.normpath(wdir)))
+    #[hi_image] is copied from the first track's own myconfig.txt -- every track in a
+    #combine set is expected to share the same [hi_image] settings (same target/correlator
+    #mode/imaging choices), only their per-track calibration differs.
+    template_config = os.path.join(tracks[0], 'myconfig.txt') if hi_image else None
+
+    output_config = combine_tracks.write_combined_config(
+        output_dir, tracks, source_vis, output_vis, hi_image, template_config)
+    logger.info('Wrote combined config "{0}".'.format(output_config))
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(output_dir)
+        write_sbatch('combine_tracks.py', '--config myconfig.txt', nodes=1, tasks=1,
+            mem=arg_dict.get('mem', DEFAULT_MEM_GB), name='combine_tracks',
+            container=arg_dict.get('container', CONTAINER), partition=arg_dict.get('partition', 'work'),
+            time=arg_dict.get('time', '12:00:00'), account=arg_dict.get('account', ''),
+            reservation=arg_dict.get('reservation', ''), modules=arg_dict.get('modules', []))
+    finally:
+        os.chdir(cwd)
+
+    logger.info('Wrote "{0}/combine_tracks.sbatch", but will not run -- resource sizing (mem/cpus) is '
+        'an unprofiled default (see REFACTOR_PLAN.md\'s Phase 10 write-up), and virtualconcat has not '
+        'yet been verified against a real run. Review before submitting.'.format(output_dir))
+
+
 def default_config(arg_dict):
 
     """Generate default config file in current directory, pointing to MS, with fields and SLURM parameters set.
@@ -2110,6 +2172,12 @@ def main():
     if args.run:
         kwargs = format_args(args.config,args.submit,args.quiet,args.dependencies,args.justrun)
         write_jobs(args.config, **kwargs)
+    if args.combine:
+        try:
+            run_combine(args.combine, args.hi_image, vars(args))
+        except ValueError as err:
+            logger.error(str(err))
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
