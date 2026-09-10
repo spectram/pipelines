@@ -599,10 +599,23 @@ collaborator's independent `IDIA_pipeline` fork and proposes two follow-on phase
 validation shell-outs; a calibrator-only/target-split crosscal redesign) — see that document for details.
 Not started; flagged here for continuity since it's currently untracked in git.
 
+**Done (2026-09-10): Phase 10 implemented** (`af50231` 10b, `30108db` 10a — full design in the "Phase 10"
+section below, written the same session it was built). 10b (`science_image.py`'s post-uvsub-vis bug) fixed
+first since it blocked 10a's continuum-imaging combine mode. 10a (`combine_tracks.py`) generalized to N
+tracks, `--combine <dir>` auto-discovers `P<N>`-named siblings, both `-H`/continuum modes implemented.
+Verified via golden-diff (clean throughout, no `-B`/`-R` path touched), standalone tests of every CASA-free
+function (one real bug caught this way — `overwrite_config()` needs pre-quoted values, not already-parsed
+Python ones), and a full synthetic end-to-end CLI test (fake track directories) covering both modes, the
+not-yet-ready-track failure path, and confirming `combine_tracks.py`'s own entry point reads its config
+correctly up to the CASA import boundary. **Not yet run against real data** — `virtualconcat` itself needs
+a real run once `P2`/`P3`/`P4` finish (their `-H` combine mode is what's actually wanted first, per this
+session's own rollout), and the generated sbatch's resource sizing is an unprofiled default (flagged as
+such in the tool's own log output) — never guess a number in, same rule as every other phase in this
+document.
+
 **Next step**: root-cause `hi_image`'s mid-computation hang (highest priority — blocks trusting any
-`niter`-heavy `hi_image` stage in production, and directly informs Phase 7b's design); then implement
-**Phase 10** (scoped below — `combine_tracks.py`, plus the `science_image.py` post-uvsub-vis bug it
-surfaced, which needs fixing first since it blocks Phase 10's continuum-imaging combine mode specifically).
+`niter`-heavy `hi_image` stage in production, and directly informs Phase 7b's design); then run Phase 10a
+for real once `P2`/`P3`/`P4` finish (profile `combine_tracks.sbatch`'s actual resource needs from that run).
 Phase 7's original walltime-strategy scope still open behind both.
 
 ---
