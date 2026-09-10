@@ -120,7 +120,8 @@ silently diverge from already-completed state at worst.
 Almost all pipeline behaviour is controlled by `myconfig.txt`, parsed via `config_parser.py`
 (`parse_config`, `get_key`, `overwrite_config`). Sections: `[data]`, `[fields]`, `[slurm]`, `[cluster]`
 (Setonix hardware facts/named partitions), `[crosscal]`, `[selfcal]`, `[cont_image]` (continuum imaging —
-renamed from `[image]`), `[contsub]` (uvcontsub.py's fit params), `[hi_image]` (HI/spectral-line cube
+renamed from `[image]`), `[contsub]` (uvcontsub.py's fit params — `fitspw`/`target_velocity` auto-estimated
+at `-B` time when left blank, see below), `[hi_image]` (HI/spectral-line cube
 imaging, independent of `[cont_image]` — see "HI cube imaging" below), `[run]` (internal/progress state).
 `default_config.txt` is the template `-B` copies from; `default_hi_sofmask.txt` is a separate SoFiA
 parameter template shared by HI and continuum imaging's masking/final passes (SoFiA's real defaults are
@@ -160,8 +161,11 @@ the mode's full native band, e.g. HI_p1's MS is 6127 channels/20MHz, not `32K_NE
 `nchan`/total bandwidth are NOT reliable identifiers for this reason). `read_ms.py` identifies the mode
 unconditionally at `-B` time (every run, not just `-H` ones) and persists only the matched *name* into
 `[run] correlator_mode` — no MS/`msmd` access exists at `-R` time to re-derive it. Each `MODES` entry is
-this pipeline's accumulated knowledge of one mode: HI-imaging-specific spectral defaults (`chanbin`/`nspw`/
-`imspw_mhz`, applied by `read_ms.py` only when `[-H --hi_image]` is set) *and* a `slurm` dict
+this pipeline's accumulated knowledge of one mode: `chanbin`/`nspw` are a property of the mode + total
+delivered bandwidth, not of HI imaging specifically, so `read_ms.py` defaults them from the identified mode
+unconditionally (every run, not just `-H`/`--contsub` ones) — only `imspw_mhz` (narrowing `[hi_image] imspw`
+and `[crosscal] spw` to a local window around the line) stays specific to `[-H --hi_image]`, since a plain
+continuum run doesn't want its spw narrowed to one line's band. Each mode entry also carries a `slurm` dict
 (`{pipeline_role: {'nodes': N, 'ntasks_per_node': M}}`) of per-script SLURM resource requests learned by
 actually profiling a real run against that mode — applied regardless of `-H`, since e.g. `selfcal_part1`
 runs whenever `[-2 --do2GC]` is set. `slurm_config_registry.py` is the resolution layer `write_jobs()`
@@ -170,6 +174,20 @@ purely a lookup by the persisted mode name into `correlator_modes.MODES[...]['sl
 profiled data for the identified mode (or no mode identified at all) is completely unaffected, falling back
 to the run's plain configured `[slurm] nodes`/`ntasks_per_node`. Add a new mode's `MODES` entry only once
 its resource needs are actually profiled against a real run — never guess a number in to get a run started.
+
+### `[contsub]` fitspw auto-estimation
+
+`contsub_utils.py` (CASA-free, unit-testable) converts between frequency and velocity via the radio
+convention (`v = c(f₀-f)/f₀` — exact/linear in frequency, the appropriate convention for HI work, unlike
+optical convention which isn't linear and diverges more at higher velocity). `read_ms.py` uses it at `-B`
+time, whenever `[-H --hi_image]` or `--contsub` is set, to fill in `[contsub] target_velocity` (left blank:
+derived from `[-F --centralspw]`/the MS's own centre frequency, i.e. assumes the band is already centred on
+the line) and then `fitspw` itself (left blank: an MSSelection string excluding a `fitspw_vwidth`-wide
+velocity window around that line centre, scoped to a local ±10MHz band — mirrors `badfreqranges`' own
+multi-range `'*:lo~hiMHz,*:lo~hiMHz'` convention, see `flag_round_1.py`'s `do_pre_flag()`). Either key left
+non-blank by the user is never overridden. `[contsub]` keeps its own `restfreq` (rest-frame frequency of the
+*line*, e.g. HI's 1420.406MHz — a physical constant, not tied to any galaxy's velocity) rather than reading
+`[hi_image]`'s, since `--contsub` can run standalone without `[hi_image]` ever being touched.
 
 ### SPW-level parallelism is separate from MPI parallelism
 

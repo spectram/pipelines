@@ -520,6 +520,89 @@ profiled data point to design against (`hi_image.py`'s HI cube imaging genuinely
 24h cap even at a narrowed scope — see `profiling_notes.md`'s HI_p1 section — though still no *confirmed-
 safe* resource/walltime point the way `selfcal_part1`'s is, so don't hardcode one yet).
 
+**Done (2026-09-08–10): `P1_test` — first full real production run under Phase 9's `chanbin=2` default,
+plus a batch of bugs it surfaced, plus a new `[contsub]` auto-`fitspw` feature.** Commits `85c7c51`..`ce861a5`
+(listed above the "Context" section stopped tracking commits at — see `git log` for the authoritative
+list). Full writeup of the real chanbin=1-vs-2 comparison (crosscal, selfcal, and `hi_image`) is in
+`profiling_notes.md`, not duplicated here.
+
+*Bugs found and fixed, via real `-B`/`-R`/live-run use, not synthetic tests*:
+- `5dab385`: `85c7c51`'s own commit (making `hi_image.py` threadsafe) missed a stale duplicate of
+  `POSTCAL_SCRIPTS` in `processMeerKAT.py` — the exact stale-duplicate pattern already fixed once before
+  (`1fac16c`) — so every `-B` build since `85c7c51` silently kept `hi_image.py` at 1 MPI rank regardless.
+  Caught immediately by a fresh `-B` build for this run.
+- `ce861a5`: `spw_split()`'s `get_spw_bounds()` decided int-vs-float split arithmetic by whether the bound
+  *string* happened to contain a decimal point, not by whether it was a genuine channel index. Any
+  whole-MHz `[crosscal] spw` (the path every non-`-H` build takes via `check_spw()`'s MS-bounds fallback —
+  now a real, common path since the nspw/chanbin ungating below) could silently drop a real slice of the
+  band from processing (confirmed live: nspw=4 over a 21MHz whole-number range dropped 1419-1420MHz
+  entirely, not a rounding artifact). `-H` builds never hit this by construction. Fixed: only genuine
+  channel-index mode uses integer arithmetic now.
+
+*New feature — `[contsub]` `fitspw`/`target_velocity` auto-estimation (`b7dbc34`)*: new CASA-free
+`contsub_utils.py` (`freq_to_velocity_radio`/`velocity_to_freq_radio`, radio convention — linear in
+frequency, the right choice for HI given MeerKAT's fixed-Hz channels; `estimate_fitspw()`, mirroring
+`badfreqranges`' own multi-range convention). `read_ms.py` fills in `target_velocity` (blank → derived from
+`[-F --centralspw]`/the MS's own centre frequency) and then `fitspw` (blank → an MSSelection string
+excluding a `fitspw_vwidth`-wide window around that velocity) at `-B` time, whenever `-H` or `--contsub` is
+set — never overriding an explicit user value for either key. New `[contsub]` keys: `restfreq` (own copy,
+since `--contsub` can run standalone without `[hi_image]`), `target_velocity`, `fitspw_vwidth` (default
+600, later bumped to **800** km/s this session). Found and fixed one bug wiring this up: `--contsub` was
+never actually forwarded into `read_ms.py`'s own invocation (only `-H`/`-F` were), so a `--contsub`-only
+build silently skipped the whole feature until fixed.
+
+*Also this session, same feature*: `[crosscal] nspw`/`chanbin` defaulting **ungated from `-H`** — it's a
+property of the correlator mode + delivered bandwidth, not of HI imaging specifically, so every crosscal
+step should get it regardless of what runs afterward. Only `[crosscal] spw`/`[hi_image] imspw` narrowing
+(genuinely HI/contsub-specific — a plain continuum run shouldn't have its spw narrowed to one line's local
+band) stays `-H`-gated. Verified via four real `-B` runs against the same MS with every combination of
+`-H`/`--contsub`/`-F` — confirmed `nspw`/`chanbin`/`fitspw` are now identical regardless of `-H`, and only
+`[crosscal] spw`'s precision (and `[hi_image]`'s presence) depends on it.
+
+*`hi_sofia`'s masking-pass SoFiA params (`7037c68`)*: `output.writeMoments` flipped `False→True` for the
+per-stage masking pass (previously only the final source-finding pass produced moment maps) — cheap,
+forward-looking, doesn't affect any already-built config.
+
+**`P1_test`'s real run — every stage but the last completed successfully.** Full crosscal (4 SPWs) → concat
+→ selfcal (all 4 loops, including the previously-untested loop 3 deep clean — 7h15m, well under 24h) →
+`run_sofia` → uvsub → uvcontsub → `hi_image` stage 0 (7h00m50s) → `hi_sofia` — all `COMPLETED`, no errors,
+confirmed via a full log sweep (the only SEVERE-level log lines found were pre-existing, known-benign casampi
+patterns already cross-checked against `HI_p1`'s own successful run). **`hi_image` stage 1 (the
+`niter=1,500,000` deep clean) hit its 12h walltime without completing — and, critically, the log shows it
+wasn't just slow: it produced normal progress through cycle 11's start, then went completely silent for the
+final ~8 hours before being killed.** A genuine hang mid-computation, not a "ran out of time normally" case
+— see `profiling_notes.md`'s writeup for the exact per-cycle timeline and why this is a different (and more
+concerning) failure mode than Phase 5's already-documented `uvcontsub.py` idempotency-skip hang. **Worth
+root-causing before Phase 7b's checkpoint-chaining design is finalized** — a checkpoint/resume mechanism
+built only around "walltime naturally runs out" doesn't help if the job can stall productively-idle for most
+of an allocation first.
+
+**Production rollout to the other 3 tracks (`P2`/`P3`/`P4`, same `N4064_HI` target program) — configs built
+and submitted, in progress as of this writing.** Scope deliberately narrower than `P1_test`: crosscal →
+selfcal → uvcontsub only (`-2 --contsub`, no `-H` — no `hi_image`/`hi_sofia`), all three built and `-R`'d
+with `-F 1415.717` (a chosen central frequency for this track family) and verified identical to each other
+(`nspw=4`/`chanbin=2`, same `fitspw`/`target_velocity`, same even 4-bin SPW split, same profiled
+`selfcal_part1`/`selfcal_part2` resource requests as `P1_test`). All three submitted; `partition` running as
+of this update.
+
+**A real gap surfaced while discussing this rollout, not yet designed or implemented**: no equivalent of
+`HI-dev`'s `m2-image-scripts/combine_tracks.py` (a `virtualconcat`-based tool combining multiple tracks'
+already-contsub'd MMSes into one dataset) exists on this branch — confirmed it was deliberately deferred in
+Phase 6 ("out of scope per this round's Q&A"), not overlooked. With `P1`-`P4` now real, separate, independent
+production run directories all producing per-track `.contsub` output, this is now a real near-term need, not
+a hypothetical — worth a proper design pass (generalizing beyond the prototype's hardcoded 2-track/Ilifu-path
+assumptions, and working out where it fits in the DAG given each track lives in its own independent run
+directory, not a sub-directory of one run the way SPW concat does) before implementing.
+
+**Separately**: `KITCHI_ADOPTION_PLAN.md` (uncommitted, repo root) compares this branch against a
+collaborator's independent `IDIA_pipeline` fork and proposes two follow-on phases (memoized SLURM
+validation shell-outs; a calibrator-only/target-split crosscal redesign) — see that document for details.
+Not started; flagged here for continuity since it's currently untracked in git.
+
+**Next step**: root-cause `hi_image`'s mid-computation hang (highest priority — blocks trusting any
+`niter`-heavy `hi_image` stage in production, and directly informs Phase 7b's design); then design/implement
+the track-combining tool; Phase 7's original walltime-strategy scope still open behind both.
+
 ---
 
 ## Context
