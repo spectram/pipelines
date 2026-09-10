@@ -1884,9 +1884,17 @@ def get_spw_bounds(spw):
     bounds = spw.split(':')[-1].split('~')
     if ',' not in spw and ':' in spw and '~' in spw and len(bounds) == 2 and bounds[1] != '':
         high,unit=re.search(r'(\d+\.*\d*)(\w*)',bounds[1]).groups()
-        func = int if unit == '' or '.' not in bounds[0] else float
+        #Only genuine channel-index mode (no unit, e.g. spw='0:100~200') should use integer
+        #arithmetic. A physical-frequency bound (unit='MHz' etc.) must always split as a
+        #float, even when the bound itself happens to be a whole number (e.g. check_spw()'s
+        #MS-bounds fallback, which casts to plain int) -- keying this off whether the bound's
+        #*string* happens to contain a decimal point (the previous behaviour) silently
+        #truncates spw_split()'s interval computation for any whole-MHz bound whose span
+        #isn't evenly divisible by nspw, dropping a real slice of the band from processing
+        #(confirmed live: nspw=4 over a 21MHz whole-number range dropped 1419-1420MHz
+        #entirely). Never trust a decimal point's presence as a type signal.
+        func = int if unit == '' else float
         low = func(bounds[0])
-        func = int if unit == '' or '.' not in high else float
         high = func(high)
 
         if unit != 'MHz':
