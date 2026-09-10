@@ -771,6 +771,16 @@ def write_sbatch(script,args,nodes=1,tasks=16,mem=DEFAULT_MEM_GB,name="job",runn
         params['mem'] = min(params['mem'], int(params['cpus'] * tasks * cluster['mem_per_cpu_mb_shared'] / 1024))
         params['time'] = '02:00:00'
 
+    #hi_image.py's deep-clean stage genuinely needs more than the pipeline's general-purpose
+    #12h default -- confirmed live (P1_test, 2026-09-10): its niter=1,500,000 stage hit the 12h
+    #limit without completing (and, separately, hung mid-cycle for the last ~8h of that --
+    #see profiling_notes.md/REFACTOR_PLAN.md's Phase 7 notes; this override doesn't fix that,
+    #just stops the walltime itself from being the limiting factor). 24h is the 'work'
+    #partition's own cap (see [cluster] long_partition for going beyond that), so this is the
+    #most headroom obtainable without also switching partition.
+    if 'hi_image' in script:
+        params['time'] = '24:00:00'
+
     #selfcal_part2's real memory need doesn't scale with the run's configured [slurm] mem the way
     #a CASA-parallel script's does (see script_registry.py's cpu_intensive=False comment on this
     #script) -- give it a floor high enough to comfortably clear its profiled real peak (41.2GB,
