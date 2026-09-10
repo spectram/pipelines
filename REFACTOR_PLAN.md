@@ -600,8 +600,10 @@ validation shell-outs; a calibrator-only/target-split crosscal redesign) — see
 Not started; flagged here for continuity since it's currently untracked in git.
 
 **Next step**: root-cause `hi_image`'s mid-computation hang (highest priority — blocks trusting any
-`niter`-heavy `hi_image` stage in production, and directly informs Phase 7b's design); then design/implement
-the track-combining tool; Phase 7's original walltime-strategy scope still open behind both.
+`niter`-heavy `hi_image` stage in production, and directly informs Phase 7b's design); then implement
+**Phase 10** (scoped below — `combine_tracks.py`, plus the `science_image.py` post-uvsub-vis bug it
+surfaced, which needs fixing first since it blocks Phase 10's continuum-imaging combine mode specifically).
+Phase 7's original walltime-strategy scope still open behind both.
 
 ---
 
@@ -1082,6 +1084,114 @@ fixed a silent-failure gap — SoFiA exiting 0 on an internal failure now raises
   didn't produce a *confirmed-safe* number the way `selfcal_part1`'s did (only "24h on `work` isn't enough at
   this scale", not what would be) -- don't add a guessed entry; revisit once a real run actually completes
   and a genuine safe nodes/tasks/time/partition point can be profiled, the same way `selfcal_part1`'s was.
+
+## Phase 10 — Multi-track combining + a continuum-vis correctness bug it surfaced
+
+Scoped (not yet implemented) 2026-09-10, driven by `P1`-`P4` (four independent tracks of the same
+`N4064_HI`/NGC4064 program, each its own production run directory) reaching the point where their
+per-track output needs combining into one dataset for final imaging — the same need `HI-dev`'s
+`m2-image-scripts/combine_tracks.py` prototype existed for, confirmed still unported here (deliberately
+deferred in Phase 6: "no new track-combining tool for continuum in this phase"). Two sub-parts, the second
+found while designing the first.
+
+### 10a — `combine_tracks.py`
+
+**Key design simplification**: the combine step's only job is to produce one valid, structurally-normal
+MMS from N tracks' per-track output. Once that exists, no new HI-imaging integration is needed at all — a
+fresh `-B` against the combined MMS reuses every already-tested mechanism on this branch (`read_ms.py`'s
+field/correlator-mode detection, `-H` imaging, etc.) completely unmodified.
+
+**Why it can't be a normal `[slurm] scripts` entry**: every existing script (`script_registry.py`,
+`write_sbatch()`/`write_command()`, the whole `-B`/`-R` DAG) is scoped to *one run directory operating on
+one `[data] vis`*. A track-combiner reads across *multiple independent run directories*
+(`P1`/`P2`/`P3`/`P4`, each with its own `.config.tmp`, its own timestamp, its own state) — there's no DAG
+position for that without inventing multi-run-directory awareness throughout `processMeerKAT.py` for one
+script. Stays a genuinely separate, standalone entry point instead (the same position `run_sofia.py`
+occupied before Phase 6 folded shared pieces into `sofia_engine.py`) — not registered in
+`script_registry.py`, since that registry only describes scripts that flow through `write_sbatch()`/
+`write_command()` as part of one run's generated DAG, which this never does.
+
+**New CLI flag**: `--combine <output_dir>`, two modes depending on whether `-H` is also given:
+
+- **`--combine <dir> -H`** (HI cube imaging from the combined data): discovers sibling `Pn` run
+  directories, reads each one's **`.config.tmp`** (not `myconfig.txt` — `hi_contsub_vis` is written by
+  `uvcontsub.py` via `config_parser.overwrite_config(args['config'], ...)`, and `args['config']` at runtime
+  is `.config.tmp`; `myconfig.txt` is never touched by any pipeline script, only by `-B`/`-R`/
+  `submit_pipeline.sh`, per this doc's own resume-recipe documentation) for `[run] hi_contsub_vis`, then:
+  ```python
+  virtualconcat(vis=[track1_contsub, ..., trackN_contsub], concatvis=output_vis, keepcopy=True)
+  ```
+  `keepcopy=True` directly on the original per-track paths, no manual `copytree()` first — CASA's own
+  copy-preserving mechanism does in one I/O pass what the prototype's manual-copy-then-`keepcopy=False`
+  dance did in two, with the same originals-untouched guarantee. Combining *after* contsub (each track
+  keeps its own independently-derived continuum fit, rather than forcing one shared fit across tracks with
+  different UV coverage/flagging) ports the prototype's parameter choice deliberately, not just its
+  mechanism — same "port the parameters, not the code structure" principle Phase 6 used for `hi_image.py`.
+  Writes a trimmed `myconfig.txt` in `<output_dir>` containing only `[data]`/`[hi_image]`/`[run]` — no
+  `[crosscal]`/`[selfcal]`/`[contsub]`, since that work is already baked into the input and re-exposing
+  those sections would misleadingly suggest they still need running. Re-runs `-H`'s correlator-mode
+  identification/`-F`-centred `imspw` logic fresh against the *combined* MMS rather than reusing any
+  per-track value verbatim — needs confirming live that `identify_mode()` still resolves the mode correctly
+  post-concat before trusting it.
+- **`--combine <dir>`** (continuum imaging from the combined data, no `-H`): combines each track's
+  *pre-uvsub* selfcal'd visibilities instead of `.contsub` — see 10b below for why `.contsub`/`[data] vis`
+  aren't safe to use here, and what to combine instead once that's fixed.
+
+**New minimal `[combine]` config** (a plain track list, not hardcoded globbing — N tracks falls out for
+free): `tracks = ['/path/P1', '/path/P2', ...]`, `output_vis = 'combined.mms'`.
+
+**Submission**: a hand-authored `.sbatch` (mirrors `concat.py`'s simplicity — single task, CASA container,
+no MPI env vars needed), not generated via `write_sbatch()`, since it's outside the generated DAG.
+Resource sizing: profile from a real run, don't guess — same rule this document has applied every phase.
+
+**Verification plan**: the CASA-free parts (track-list validation, path assembly, trimmed-config writing)
+get a standalone unit test, no CASA needed, same pattern as `contsub_utils.py`/`correlator_modes.py`.
+`virtualconcat` itself needs a real run — same caveat as every other real-CASA-only code path in this repo.
+
+### 10b — `science_image.py` reads post-uvsub data for continuum imaging: a real, pre-existing bug
+
+Found while designing 10a's continuum-imaging mode (not introduced by it — confirmed live in the current
+code, independent of track-combining). Three facts, each confirmed by reading the actual code rather than
+assumed:
+
+1. **`uvsub()` modifies `[data] vis`'s `CORRECTED_DATA` in place**, and `uvsub.py` already knows this is
+   dangerous — it makes a `shutil.copytree(visname, visname+'.post_selfcal')` backup *before* calling it.
+   But nothing downstream knows this backup exists: `bookkeeping.py` has `get_hi_contsub_vis()`/
+   `get_continuum_vis()` accessors but none for `.post_selfcal`, and `uvsub.py` never records its path into
+   `[run]`.
+2. **`science_image.py`'s own vis resolution never reaches it either**:
+   ```python
+   vis = va(taskvals, 'cont_image', 'vis', str, default='')
+   if vis == '':
+       vis = va(taskvals, 'data', 'vis', str)   # falls straight to [data] vis, not any accessor
+   ```
+3. **The default `postcal_scripts` order runs `science_image.py` *after* `uvsub.py`/`uvcontsub.py`**
+   (confirmed straight from `processMeerKAT.py`'s `POSTCAL_SCRIPTS`: `..., uvsub, uvcontsub, hi_image,
+   hi_sofia, science_image, cont_sofia`).
+
+Put together: any `-H -I` combined build (or any build where continuum imaging happens to run after
+uvsub/uvcontsub in the script list) images the continuum-*subtracted* visibilities instead of the full
+self-calibrated continuum — silently, no error. This is live today, not something 10a would introduce; 10a
+just can't build a correct continuum `--combine` mode on top of a source that's already wrong.
+
+**Checked the "repopulate from `DATA`" alternative directly rather than assuming**: `applycal()` (both in
+`xx_yy_apply.py` and `selfcal_part1.py`) always writes to `CORRECTED_DATA` — fixed CASA behavior for the
+classic `applycal` task, not configurable via a column argument. `DATA` is never touched by it, so it holds
+raw, pre-*any*-calibration visibilities, not selfcal-improved ones. Repopulating `CORRECTED_DATA` from
+`DATA` would silently discard all crosscal+selfcal work, not recover it — not viable.
+
+**Fix** (most of the mechanism already exists, just needs wiring up): give `.post_selfcal` a real
+`bookkeeping.py` accessor (`get_post_selfcal_vis()`, mirroring the other two), have `uvsub.py` record its
+path into `[run]` right after creating it, and have `science_image.py` prefer that accessor over `[data]
+vis` as its fallback (keeping the existing `[cont_image] vis` manual-override as the first choice,
+unchanged). Closes the bug for the *existing* single-track path, not just track-combining — and gives 10a's
+continuum `--combine` mode a well-defined, correct source (each track's `post_selfcal_vis`, structurally
+parallel to the `-H` mode's use of `.contsub`).
+
+**Sequencing**: 10b blocks 10a's continuum-imaging mode specifically (the `-H` mode doesn't depend on it —
+`.contsub` is unaffected by this bug). Land 10b first, independently verifiable via a real `-I` build once
+`P1`-style crosscal/selfcal output exists to test against, then build 10a's continuum mode on top of a
+confirmed-correct source.
 
 ## Verification
 
