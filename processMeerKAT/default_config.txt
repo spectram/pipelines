@@ -148,8 +148,11 @@ combo = 0                         # Internal: unused for [cont_image] (no combo 
 stage = 0                         # Internal: current stage index in 'stages', advanced by cont_sofia.py
 
 [contsub]                         # uvcontsub.py's continuum-fit parameters -- shared by -H and standalone --contsub, independent of whether continuum imaging (cont_image, above) itself runs
-fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub
+fitspw = ''                       # Emission line frequencies to exclude from fit to continuum during uvcontsub. Left blank: auto-estimated at -B time (read_ms.py, via contsub_utils.py) from restfreq/target_velocity/fitspw_vwidth whenever [-H --hi_image] or --contsub is set -- set explicitly here to override the auto-estimate.
 fitorder = 1                      # Order of polynomial fit to continuum during uvcontsub
+restfreq = '1420.406MHz'          # Rest frequency of the target line -- own copy, not read from [hi_image] (contsub can run standalone via --contsub, without [hi_image] ever being touched)
+target_velocity = ''              # Target's systemic velocity (km/s, radio convention) -- centre of the line window auto-fitspw excludes. Left blank: derived at -B time from [-F --centralspw] (or the MS's own centre frequency) via the radio velocity formula, i.e. assumes the observed band is already centred on the line.
+fitspw_vwidth = 600                # Total velocity width (km/s, not half-width) to exclude around target_velocity when auto-estimating fitspw
 
 [hi_image]                        # HI (spectral-line) cube imaging -- Phase 6 of the Pawsey refactor (see REFACTOR_PLAN.md). Images [run] hi_contsub_vis (uvcontsub.py's output, gated on -H/--contsub), not [data] vis.
 # Weighting combinations to image, one dict per combination -- the *entire* stage chain

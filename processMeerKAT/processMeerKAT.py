@@ -1557,8 +1557,8 @@ def default_config(arg_dict):
     #bandwidth, centre frequency) -- see correlator_modes.py -- so that happens inside read_ms.py
     #below (which already opens the MS via msmd), not here. [-H --hi_image]/[-F --centralspw] are
     #forwarded into read_ms.py's own invocation for that purpose.
-    if not arg_dict['hi_image'] and arg_dict['centralspw'] is not None:
-        logger.warning("[-F --centralspw] was set but [-H --hi_image] wasn't -- ignoring, since it only defines the spw window for HI cube imaging.")
+    if not (arg_dict['hi_image'] or arg_dict['contsub']) and arg_dict['centralspw'] is not None:
+        logger.warning("[-F --centralspw] was set but neither [-H --hi_image] nor --contsub was -- ignoring, since it only centres the HI imaging/contsub line window.")
 
     if not arg_dict['nofields']:
         #Don't call srun if option --local used
@@ -1575,6 +1575,9 @@ def default_config(arg_dict):
             params += ' -v'
         if arg_dict['hi_image']:
             params += ' -H'
+        if arg_dict['contsub']:
+            params += ' --contsub'
+        if arg_dict['hi_image'] or arg_dict['contsub']:
             if arg_dict['centralspw'] is not None:
                 params += ' -F {0}'.format(arg_dict['centralspw'])
         command = write_command('read_ms.py', params, mpi_wrapper=mpi_wrapper, container=arg_dict['container'],logfile=False, mpi=False)

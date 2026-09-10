@@ -9,6 +9,7 @@ import numpy as np
 import processMeerKAT
 import config_parser
 import correlator_modes
+import contsub_utils
 
 from casatasks import *
 from casatools import msmetadata,table,measures,quanta
@@ -440,19 +441,35 @@ def main():
         logger.info("MeerKAT correlator mode not recognized (nchan={0}, ChanWid={1:.3f}kHz, TotBW={2:.1f}MHz, CtrFreq={3:.3f}MHz) -- add it to correlator_modes.py's MODES for mode-specific defaults.".format(
             nchan, chanwid_khz, totbw_mhz, ctrfreq_mhz))
 
-    #When [-H --hi_image] is set, additionally use the identified mode (if any) to default
-    #[crosscal] nspw/chanbin and [hi_image] imspw for a narrow-band HI/spectral-line observation,
-    #in place of default_config.txt's continuum-tuned defaults. Centred on [-F --centralspw] if
-    #given, else the MS's own centre frequency -- narrows [crosscal] spw too (below), which
-    #check_spw() then still clamps to the MS's real bounds as a safety net, same as the
-    #pre-existing [-F --centralspw] mechanism this replaces.
-    if args.hi_image:
-        centralfreq_mhz = args.centralspw if args.centralspw is not None else ctrfreq_mhz
+    #[crosscal] nspw/chanbin are a property of the identified correlator mode + total
+    #delivered bandwidth, not of HI cube imaging specifically -- every crosscal step reads
+    #them regardless of what runs afterward, so default them from the identified mode (if
+    #any) unconditionally, not just when [-H --hi_image] is set. (Narrowing [crosscal] spw
+    #itself, and [hi_image] imspw, stay HI/contsub-specific below -- a plain continuum run
+    #doesn't want its spw narrowed to one line's local band.)
+    if mode is not None:
+        logger.info("Defaulting [crosscal] nspw={0}, chanbin={1} for correlator mode '{2}'.".format(
+            mode['nspw'], mode['chanbin'], mode['name']))
+        config_parser.overwrite_config(args.config, conf_dict={'nspw': mode['nspw'], 'chanbin': mode['chanbin']}, conf_sec='crosscal')
 
+    #centralfreq_mhz centres both the [hi_image] imspw/[crosscal] spw narrowing below (-H
+    #only) and the [contsub] fitspw auto-estimate further down (-H or --contsub) -- computed
+    #once here whenever either might need it. Centred on [-F --centralspw] if given, else the
+    #MS's own centre frequency.
+    if args.hi_image or args.contsub:
+        centralfreq_mhz = args.centralspw if args.centralspw is not None else ctrfreq_mhz
+    else:
+        centralfreq_mhz = None
+        if args.centralspw is not None:
+            logger.warning("[-F --centralspw] was set but neither [-H --hi_image] nor --contsub was -- ignoring, since it only centres the HI imaging/contsub line window.")
+
+    #When [-H --hi_image] is set, narrow [crosscal] spw and [hi_image] imspw to a
+    #narrow-band HI/spectral-line window around centralfreq_mhz, in place of
+    #default_config.txt's continuum-tuned defaults -- check_spw() then still clamps
+    #[crosscal] spw to the MS's real bounds as a safety net, same as the pre-existing
+    #[-F --centralspw] mechanism this replaces.
+    if args.hi_image:
         if mode is not None:
-            logger.info("Defaulting [crosscal] nspw={0}, chanbin={1}, [hi_image] imspw width={2}MHz for correlator mode '{3}'.".format(
-                mode['nspw'], mode['chanbin'], mode['imspw_mhz'], mode['name']))
-            config_parser.overwrite_config(args.config, conf_dict={'nspw': mode['nspw'], 'chanbin': mode['chanbin']}, conf_sec='crosscal')
             imspw_halfwidth = mode['imspw_mhz'] / 2.
         else:
             logger.warning("Falling back to nspw=1, unchanged chanbin, and a +-{0}MHz [hi_image] imspw band, since the correlator mode wasn't recognized.".format(correlator_modes.GENERAL_IMSPW_MHZ / 2.))
@@ -466,8 +483,38 @@ def main():
         imspw_low = round(centralfreq_mhz - imspw_halfwidth, 4)
         imspw_high = round(centralfreq_mhz + imspw_halfwidth, 4)
         config_parser.overwrite_config(args.config, conf_dict={'imspw': "'*:{0}~{1}MHz'".format(imspw_low, imspw_high)}, conf_sec='hi_image')
-    elif args.centralspw is not None:
-        logger.warning("[-F --centralspw] was set but [-H --hi_image] wasn't -- ignoring, since it only defines the spw window for HI cube imaging.")
+
+    #Auto-estimate [contsub] target_velocity/fitspw whenever contsub will actually run (-H or
+    #--contsub), reusing centralfreq_mhz -- never overrides either key if the user already
+    #set it explicitly in the config. target_velocity, left blank, is derived from
+    #centralfreq_mhz on the assumption the observed band is already centred on the line (the
+    #same assumption [hi_image] imspw's own centring already makes); fitspw, left blank, is
+    #then derived from that velocity via contsub_utils.estimate_fitspw(), scoped to a local
+    #+-10MHz window around centralfreq_mhz (matching the [crosscal] spw narrowing above) so it
+    #describes locally-flanking continuum either side of the line, not the MS's entire band.
+    if args.hi_image or args.contsub:
+        contsub_cfg = config_parser.parse_config(args.config)[0].get('contsub', {})
+        restfreq_mhz = qa.convert(contsub_cfg.get('restfreq', '1420.406MHz'), 'MHz')['value']
+
+        target_velocity = contsub_cfg.get('target_velocity', '')
+        if target_velocity in ('', None):
+            target_velocity = round(contsub_utils.freq_to_velocity_radio(centralfreq_mhz, restfreq_mhz), 2)
+            config_parser.overwrite_config(args.config, conf_dict={'target_velocity': target_velocity}, conf_sec='contsub')
+            logger.info("[contsub] target_velocity not set -- derived {0}km/s from the central frequency ({1}MHz) used for imspw/spw centring.".format(target_velocity, centralfreq_mhz))
+        else:
+            target_velocity = float(target_velocity)
+
+        fitspw = contsub_cfg.get('fitspw', '')
+        if fitspw in ('', None):
+            fitspw_vwidth = float(contsub_cfg.get('fitspw_vwidth', 600))
+            band_lo = round(centralfreq_mhz - 10, 4)
+            band_hi = round(centralfreq_mhz + 10, 4)
+            try:
+                fitspw = contsub_utils.estimate_fitspw(band_lo, band_hi, restfreq_mhz, target_velocity, fitspw_vwidth)
+                config_parser.overwrite_config(args.config, conf_dict={'fitspw': "'{0}'".format(fitspw)}, conf_sec='contsub')
+                logger.info("[contsub] fitspw not set -- auto-estimated '{0}' from target_velocity={1}km/s, fitspw_vwidth={2}km/s.".format(fitspw, target_velocity, fitspw_vwidth))
+            except ValueError as e:
+                logger.warning(str(e))
 
     SPW = check_spw(args.config,msmd)
 
