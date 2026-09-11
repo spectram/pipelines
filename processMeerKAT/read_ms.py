@@ -484,14 +484,21 @@ def main():
         imspw_high = round(centralfreq_mhz + imspw_halfwidth, 4)
         config_parser.overwrite_config(args.config, conf_dict={'imspw': "'*:{0}~{1}MHz'".format(imspw_low, imspw_high)}, conf_sec='hi_image')
 
-    #Auto-estimate [contsub] target_velocity/fitspw whenever contsub will actually run (-H or
-    #--contsub), reusing centralfreq_mhz -- never overrides either key if the user already
-    #set it explicitly in the config. target_velocity, left blank, is derived from
-    #centralfreq_mhz on the assumption the observed band is already centred on the line (the
-    #same assumption [hi_image] imspw's own centring already makes); fitspw, left blank, is
-    #then derived from that velocity via contsub_utils.estimate_fitspw(), scoped to a local
-    #+-10MHz window around centralfreq_mhz (matching the [crosscal] spw narrowing above) so it
-    #describes locally-flanking continuum either side of the line, not the MS's entire band.
+    #Auto-estimate [contsub] target_velocity whenever contsub will actually run (-H or
+    #--contsub), reusing centralfreq_mhz -- never overrides it if the user already set it
+    #explicitly. Left blank, it's derived from centralfreq_mhz on the assumption the observed
+    #band is already centred on the line (the same assumption [hi_image] imspw's own centring
+    #already makes).
+    #
+    #[contsub] fitspw itself is deliberately NOT computed here, unlike target_velocity --
+    #confirmed live (RuntimeError: "Error trying to parse SPW: *:..., stoi") that uvcontsub's
+    #'fitspec' parameter needs real, explicit per-SPW IDs (its own bespoke parser doesn't
+    #accept flagdata-style '*' wildcards), and those IDs only exist on the MS *after*
+    #partition.py/concat.py's per-SPW fan-out and re-concatenation -- which hasn't happened yet
+    #at '-B' time, when this function runs against the raw input MS's own (different, typically
+    #single-SPW) structure. See uvcontsub.py, which now computes fitspec fresh at its own
+    #runtime via a real msmd query against '[data] vis', and contsub_utils.estimate_fitspec()'s
+    #own docstring for the full story.
     if args.hi_image or args.contsub:
         contsub_cfg = config_parser.parse_config(args.config)[0].get('contsub', {})
         restfreq_mhz = qa.convert(contsub_cfg.get('restfreq', '1420.406MHz'), 'MHz')['value']
@@ -501,20 +508,6 @@ def main():
             target_velocity = round(contsub_utils.freq_to_velocity_radio(centralfreq_mhz, restfreq_mhz), 2)
             config_parser.overwrite_config(args.config, conf_dict={'target_velocity': target_velocity}, conf_sec='contsub')
             logger.info("[contsub] target_velocity not set -- derived {0}km/s from the central frequency ({1}MHz) used for imspw/spw centring.".format(target_velocity, centralfreq_mhz))
-        else:
-            target_velocity = float(target_velocity)
-
-        fitspw = contsub_cfg.get('fitspw', '')
-        if fitspw in ('', None):
-            fitspw_vwidth = float(contsub_cfg.get('fitspw_vwidth', 600))
-            band_lo = round(centralfreq_mhz - 10, 4)
-            band_hi = round(centralfreq_mhz + 10, 4)
-            try:
-                fitspw = contsub_utils.estimate_fitspw(band_lo, band_hi, restfreq_mhz, target_velocity, fitspw_vwidth)
-                config_parser.overwrite_config(args.config, conf_dict={'fitspw': "'{0}'".format(fitspw)}, conf_sec='contsub')
-                logger.info("[contsub] fitspw not set -- auto-estimated '{0}' from target_velocity={1}km/s, fitspw_vwidth={2}km/s.".format(fitspw, target_velocity, fitspw_vwidth))
-            except ValueError as e:
-                logger.warning(str(e))
 
     SPW = check_spw(args.config,msmd)
 

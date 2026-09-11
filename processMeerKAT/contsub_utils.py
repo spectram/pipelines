@@ -53,21 +53,34 @@ def velocity_to_freq_radio(velocity_kms, restfreq_mhz):
     return restfreq_mhz * (1 - velocity_kms / C_KM_S)
 
 
-def estimate_fitspw(band_lo_mhz, band_hi_mhz, restfreq_mhz, target_velocity_kms, fitspw_vwidth_kms):
+def estimate_fitspec(spw_ranges, restfreq_mhz, target_velocity_kms, fitspw_vwidth_kms):
 
-    """Build an MSSelection fitspw string covering [band_lo_mhz, band_hi_mhz] minus the
+    """Build a CASA uvcontsub 'fitspec' string covering every SPW in 'spw_ranges' minus the
     line-exclusion window -- 'fitspw_vwidth_kms' (radio-convention km/s, total width, not
-    half-width) centred on 'target_velocity_kms' around 'restfreq_mhz'. Mirrors
-    badfreqranges' own multi-range '*:lo~hiMHz,*:lo~hiMHz' convention (see
-    flag_round_1.py's do_pre_flag()), so it reads the same way as every other
-    exclude-this-frequency-range setting in this pipeline.
+    half-width) centred on 'target_velocity_kms' around 'restfreq_mhz'.
+
+    IMPORTANT, found the hard way (confirmed live: 'RuntimeError: Error trying to parse SPW:
+    *:..., stoi'): unlike flagdata's 'spw' parameter (which badfreqranges' own multi-range
+    '*:lo~hiMHz,*:lo~hiMHz' convention targets, see flag_round_1.py's do_pre_flag()),
+    uvcontsub's 'fitspec' uses its own bespoke parser (UVContSubTVI::fitSpecToPerFieldMap) that
+    does NOT accept the '*' wildcard for SPW ID -- every SPW must be named explicitly by its
+    real integer ID (CASA's own inline help: "'17:100~500;600~910,19:7~100'"). A SPW omitted
+    from the string is fit in full by fitspec's own documented default -- so this only ever
+    needs to name SPWs that actually overlap the excluded line window; every other SPW is
+    correctly handled by omission.
+
+    This also means (a genuinely different problem from the wildcard syntax, not just a
+    string-formatting fix): the caller MUST supply the *real* SPW structure of the MS
+    uvcontsub will actually run on -- which, in this pipeline, only exists after
+    partition.py/concat.py's per-SPW fan-out and re-concatenation, not the raw input MS's own
+    (typically single-SPW) structure at '-B' time. Query it fresh via msmd against
+    '[data] vis' at uvcontsub.py's own runtime, not in read_ms.py.
 
     Arguments:
     ----------
-    band_lo_mhz : float
-        Low edge (MHz) of the band available to fit as continuum.
-    band_hi_mhz : float
-        High edge (MHz) of the band available to fit as continuum.
+    spw_ranges : list
+        (spwid, lo_mhz, hi_mhz) tuples for every SPW in the target MS (e.g. from
+        msmd.chanfreqs(i) for i in range(msmd.nspw())).
     restfreq_mhz : float
         Rest frequency of the target line (MHz).
     target_velocity_kms : float
@@ -77,29 +90,42 @@ def estimate_fitspw(band_lo_mhz, band_hi_mhz, restfreq_mhz, target_velocity_kms,
 
     Returns:
     --------
-    fitspw : str
-        MSSelection string for the continuum-fit channels (the line window excluded).
+    fitspec : str
+        CASA uvcontsub 'fitspec' string (line window excluded from each overlapping SPW; SPWs
+        with no overlap omitted, fit in full by fitspec's own default).
 
     Raises:
     -------
     ValueError
-        If the excluded window covers the entire band, leaving nothing to fit."""
+        If a SPW is entirely inside the excluded window (not expressible in fitspec's
+        simple-string form -- would need the dictionary form's per-SPW 'NONE'/empty 'chan'),
+        or if the excluded window doesn't overlap any SPW at all."""
 
     f_center = velocity_to_freq_radio(target_velocity_kms, restfreq_mhz)
     half_width_mhz = restfreq_mhz * (fitspw_vwidth_kms / 2.) / C_KM_S
-    f_lo = max(f_center - half_width_mhz, band_lo_mhz)
-    f_hi = min(f_center + half_width_mhz, band_hi_mhz)
-
-    if f_lo <= band_lo_mhz and f_hi >= band_hi_mhz:
-        raise ValueError(
-            "[contsub] fitspw_vwidth={0}km/s around target_velocity={1}km/s excludes the "
-            "entire fit band ({2}-{3}MHz) -- nothing left to fit as continuum. Narrow "
-            "fitspw_vwidth or set [contsub] fitspw explicitly.".format(
-                fitspw_vwidth_kms, target_velocity_kms, band_lo_mhz, band_hi_mhz))
+    line_lo, line_hi = f_center - half_width_mhz, f_center + half_width_mhz
 
     parts = []
-    if f_lo > band_lo_mhz:
-        parts.append('*:{0}~{1}MHz'.format(round(band_lo_mhz, 4), round(f_lo, 4)))
-    if f_hi < band_hi_mhz:
-        parts.append('*:{0}~{1}MHz'.format(round(f_hi, 4), round(band_hi_mhz, 4)))
+    for spwid, lo, hi in spw_ranges:
+        if line_hi <= lo or line_lo >= hi:
+            continue  #No overlap -- omit, fit this SPW in full (fitspec's own default).
+        if line_lo <= lo and line_hi >= hi:
+            raise ValueError(
+                "SPW {0} ({1}-{2}MHz) is entirely inside the excluded line window "
+                "({3}-{4}MHz) -- not expressible in fitspec's simple-string form. Narrow "
+                "fitspw_vwidth or set [contsub] fitspw explicitly.".format(
+                    spwid, round(lo, 4), round(hi, 4), round(line_lo, 4), round(line_hi, 4)))
+        ranges = []
+        if lo < line_lo:
+            ranges.append('{0}~{1}MHz'.format(round(lo, 4), round(line_lo, 4)))
+        if hi > line_hi:
+            ranges.append('{0}~{1}MHz'.format(round(line_hi, 4), round(hi, 4)))
+        parts.append('{0}:{1}'.format(spwid, ';'.join(ranges)))
+
+    if not parts:
+        raise ValueError(
+            "[contsub] fitspw_vwidth={0}km/s around target_velocity={1}km/s doesn't overlap "
+            "any SPW in {2} -- check target_velocity/restfreq.".format(
+                fitspw_vwidth_kms, target_velocity_kms, spw_ranges))
+
     return ','.join(parts)
