@@ -131,11 +131,15 @@ def resolve_track_vis(track_dir, hi_image, config_name='.config.tmp'):
 
 def write_combined_config(output_dir, tracks, source_vis, output_vis, hi_image, template_config=None):
 
-    """Write a trimmed myconfig.txt in 'output_dir' for the combined MS -- [data]/[run]/[combine]
-    always, plus a copy of [hi_image] (from 'template_config', typically one of the source
-    tracks' own myconfig.txt) when 'hi_image' is True. Deliberately omits [crosscal]/[selfcal]/
-    [contsub] -- that work is already baked into the per-track inputs being combined, and
-    re-exposing those sections would misleadingly suggest they still need running here.
+    """Write a trimmed myconfig.txt in 'output_dir' for the combined MS -- [data]/[run]/
+    [combine]/[crosscal] always, plus a copy of [hi_image] and [run] correlator_mode (from
+    'template_config', typically one of the source tracks' own myconfig.txt) when 'hi_image'
+    is True. Deliberately omits [selfcal]/[contsub] and the per-track [crosscal] calibration
+    keys -- that work is already baked into the per-track inputs being combined, and
+    re-exposing those sections would misleadingly suggest they still need running here; only
+    a minimal [crosscal] spw/nspw stub is written, since every script run via
+    bookkeeping.run_script() (i.e. every script here except combine_tracks.py itself)
+    unconditionally validates those two keys even when no crosscal step is in its DAG.
 
     [combine] records the resolved inputs (tracks + their absolute source_vis paths) so the
     actual combine_tracks.py compute job -- run inside a submitted sbatch, separately from this
@@ -156,7 +160,10 @@ def write_combined_config(output_dir, tracks, source_vis, output_vis, hi_image, 
     hi_image : bool
         Combining for HI imaging (True) or continuum imaging (False)?
     template_config : str, optional
-        Path to a config to copy [hi_image] from, when hi_image=True. Required in that case.
+        Path to a config to copy [hi_image]/[run] correlator_mode from -- required when
+        hi_image=True (need somewhere to copy [hi_image] from); optional but recommended
+        otherwise (only used for [run] correlator_mode, which just falls back to unprofiled
+        default SLURM resources for every script if omitted).
 
     Returns:
     --------
@@ -169,24 +176,55 @@ def write_combined_config(output_dir, tracks, source_vis, output_vis, hi_image, 
     os.makedirs(output_dir, exist_ok=True)
     output_config = os.path.join(output_dir, 'myconfig.txt')
 
-    concatvis = os.path.join(output_dir, output_vis)
-    config_parser.overwrite_config(output_config, conf_dict={'vis': "'{0}'".format(concatvis)}, conf_sec='data')
+    #'output_vis' -- NOT 'os.path.join(output_dir, output_vis)' -- since every script that
+    #reads this (combine_tracks.py's own '[data] vis' idempotency check directly, and, via
+    #'[run] hi_contsub_vis'/'post_selfcal_vis' below, hi_image.py/science_image.py) runs with
+    #its working directory already at 'output_dir' -- mirrors the per-track pipeline's own
+    #convention of '[data] vis' being a bare filename sitting in the run directory (see
+    #CLAUDE.md's '.config.tmp' vs 'myconfig.txt' section). Embedding 'output_dir' here was a
+    #real bug, found live (2026-09-11): it doubled up ('M2/M2/...') once the job's cwd was
+    #already 'output_dir'.
+    config_parser.overwrite_config(output_config, conf_dict={'vis': "'{0}'".format(output_vis)}, conf_sec='data')
     config_parser.overwrite_config(output_config,
         conf_dict={'tracks': repr(tracks), 'source_vis': repr(source_vis), 'hi_image': hi_image},
         conf_sec='combine', sec_comment='# Tracks combined into [data] vis, and how -- see combine_tracks.py')
-    config_parser.overwrite_config(output_config, conf_dict={'continue': True}, conf_sec='run',
-        sec_comment='# Internal variables for pipeline execution')
 
+    #Neither hi_image.py nor science_image.py reads '[data] vis' directly -- both resolve
+    #their real input via the same '[run]' accessor the per-track pipeline already uses
+    #(bookkeeping.get_hi_contsub_vis()/get_post_selfcal_vis()), written here by the same
+    #convention uvcontsub.py/uvsub.py use on a per-track run. Without this, hi_image.py would
+    #see hi_contsub_vis=='' and refuse to run (see its own explicit check).
+    run_dict = {'continue': True}
     if hi_image:
+        run_dict['hi_contsub_vis'] = "'{0}'".format(output_vis)
+    else:
+        run_dict['post_selfcal_vis'] = "'{0}'".format(output_vis)
+    config_parser.overwrite_config(output_config, conf_dict=run_dict, conf_sec='run',
+        sec_comment='# Internal variables for pipeline execution')
+    config_parser.overwrite_config(output_config, conf_dict={'spw': "''", 'nspw': 1}, conf_sec='crosscal')
+
+    if template_config:
         template_dict, _ = config_parser.parse_config(template_config)
-        hi_image_section = template_dict.get('hi_image', {})
-        if not hi_image_section:
-            raise ValueError("'{0}' has no [hi_image] section to copy.".format(template_config))
-        #overwrite_config() just str()s whatever it's given -- template_dict's values are
-        #already parsed (ast.literal_eval()'d) Python values, e.g. a plain unquoted string, so
-        #they need re-quoting via repr() to round-trip back through config parsing correctly
-        #(str() alone would write e.g. imspw's value as bare, unquoted text).
-        config_parser.overwrite_config(output_config, conf_dict={k: repr(v) for k, v in hi_image_section.items()}, conf_sec='hi_image')
+
+        #Correlator mode is a property of the raw input data (identified once by read_ms.py
+        #at each track's own '-B' time), unaffected by combining -- carried forward so
+        #slurm_config_registry's per-script resource overrides (e.g. hi_image's profiled
+        #nodes/tasks for this mode -- see correlator_modes.py) still apply to the combined
+        #run, the same way they did for each individual track.
+        correlator_mode = template_dict.get('run', {}).get('correlator_mode', '')
+        if correlator_mode:
+            config_parser.overwrite_config(output_config, conf_dict={'correlator_mode': repr(correlator_mode)},
+                conf_sec='run', sec_comment='# Internal variables for pipeline execution')
+
+        if hi_image:
+            hi_image_section = template_dict.get('hi_image', {})
+            if not hi_image_section:
+                raise ValueError("'{0}' has no [hi_image] section to copy.".format(template_config))
+            #overwrite_config() just str()s whatever it's given -- template_dict's values are
+            #already parsed (ast.literal_eval()'d) Python values, e.g. a plain unquoted string, so
+            #they need re-quoting via repr() to round-trip back through config parsing correctly
+            #(str() alone would write e.g. imspw's value as bare, unquoted text).
+            config_parser.overwrite_config(output_config, conf_dict={k: repr(v) for k, v in hi_image_section.items()}, conf_sec='hi_image')
 
     return output_config
 
@@ -205,13 +243,42 @@ def main(args, taskvals):
         logger.info('"{0}" already exists. Not overwriting, continuing.'.format(vis))
         return
 
-    logger.info('Combining {0} tracks into "{1}": {2}'.format(len(source_vis), vis, source_vis))
-    #keepcopy=True: CASA copies the inputs internally before concatenating, leaving the
-    #originals (each track's own '[run] hi_contsub_vis'/'post_selfcal_vis') untouched -- the
-    #same originals-preserved guarantee the prototype achieved via a manual copytree() +
-    #keepcopy=False, in one I/O pass instead of two.
-    virtualconcat(vis=source_vis, concatvis=vis, keepcopy=True)
+    #virtualconcat's own keepcopy=True is broken for any 'vis' entry containing a path
+    #separator -- confirmed live (2026-09-11): its backup dance does
+    #'shutil.move(elvis, tempdir)' (which lands the file at 'tempdir/<basename>', since
+    #shutil.move() to a directory target uses os.path.basename) then tries to restore via
+    #'shutil.copytree(tempdir+"/"+elvis, elvis, True)' -- a bare string concat of the FULL
+    #original path, not its basename, so it looks for e.g.
+    #'concat_tmp_.../scratch/.../P1/foo.contsub' instead of 'concat_tmp_.../foo.contsub'
+    #and raises FileNotFoundError immediately (see task_virtualconcat.py in the container's
+    #casatasks). Only correct when every 'vis' entry is already a bare filename sitting in
+    #cwd -- not our case, since each track's '.contsub' lives in its own directory. Sidestep
+    #entirely: make our own disposable local copies (any path is fine once keepcopy=False,
+    #since that skips CASA's own broken backup block completely) and let virtualconcat
+    #modify those freely -- true originals (each track's own 'hi_contsub_vis') are never
+    #touched. One extra copy pass, but safe.
+    import shutil
+    tracks = taskvals['combine']['tracks']
+    if isinstance(tracks, str):
+        tracks = ast.literal_eval(tracks)
+    workdir = 'concat_inputs'
+    os.makedirs(workdir, exist_ok=True)
+    local_vis = []
+    for track_dir, src in zip(tracks, source_vis):
+        dst = os.path.join(workdir, '{0}_{1}'.format(os.path.basename(track_dir), os.path.basename(src)))
+        if not os.path.exists(dst):
+            logger.info('Copying "{0}" -> "{1}" (disposable working copy; original untouched).'.format(src, dst))
+            shutil.copytree(src, dst)
+        else:
+            logger.info('"{0}" already exists. Not overwriting, continuing to next track.'.format(dst))
+        local_vis.append(dst)
+
+    logger.info('Combining {0} tracks into "{1}": {2}'.format(len(local_vis), vis, source_vis))
+    virtualconcat(vis=local_vis, concatvis=vis, keepcopy=False)
     logger.info('Wrote "{0}".'.format(vis))
+
+    shutil.rmtree(workdir)
+    logger.info('Removed disposable working copies in "{0}".'.format(workdir))
 
 
 if __name__ == '__main__':

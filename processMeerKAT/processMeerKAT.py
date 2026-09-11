@@ -1494,14 +1494,101 @@ def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scri
         write_master(MASTER_SCRIPT,config,scripts=scripts,submit=submit,pad_length=pad_length,verbose=verbose,echo=echo,dependencies=dependencies,slurm_kwargs=kwargs)
 
 
+def write_combine_jobs(config, hi_image, arg_dict):
+
+    """Write the sbatch chain for a '--combine'd run directory -- 'combine_tracks.sbatch'
+    followed by 'hi_image.sbatch'/'hi_sofia.sbatch' (HI imaging) or
+    'science_image.sbatch'/'cont_sofia.sbatch' (continuum) -- and 'submit_pipeline.sh'
+    chaining them, reusing the exact same per-script sbatch generation (write_sbatch(),
+    including slurm_config_registry's per-correlator-mode resource overrides) and chaining
+    (write_master(), including expand_hi_combo_scripts()/
+    expand_cont_image_stage_scripts()'s per-stage/per-combo replication) machinery '-R' uses
+    for a single track -- minus the crosscal/selfcal machinery that doesn't apply to an
+    already-calibrated, already-concatenated combined MS (see
+    combine_tracks.write_combined_config()'s minimal '[crosscal]' stub). Does not submit
+    anything, matching '-R' itself. Must be called with cwd already at the combine output
+    directory (e.g. 'M2') -- mirrors write_jobs()'s own convention of writing/reading paths
+    relative to the run directory.
+
+    Arguments:
+    ----------
+    config : str
+        Path to config file, relative to cwd (e.g. 'myconfig.txt').
+    hi_image : bool
+        HI imaging chain (True) or continuum imaging chain (False).
+    arg_dict : dict
+        Parsed CLI args (vars(args)) -- reuses the same account/partition/mem/nodes/
+        ntasks_per_node/time/container/modules already used for '-B'/'-R', so '--combine'
+        doesn't need its own separate set of resource flags."""
+
+    scripts = [('combine_tracks.py', False, '')]
+    if hi_image:
+        scripts += [('hi_image.py', True, ''), ('hi_sofia.py', False, SOFIA_CONTAINER)]
+    else:
+        scripts += [('science_image.py', False, ''), ('cont_sofia.py', False, SOFIA_CONTAINER)]
+
+    #No msmd/MS access at this point (mirrors write_jobs() itself) -- read back the mode
+    #identified once by read_ms.py at each source track's own '-B' time and carried forward
+    #into this combined config by write_combined_config().
+    correlator_mode = config_parser.get_key(config, 'run', 'correlator_mode')
+    cluster_kwargs = get_cluster_kwargs(config)
+    nodes = arg_dict.get('nodes', 8)
+    ntasks_per_node = arg_dict.get('ntasks_per_node', 4)
+    mem = int(arg_dict.get('mem', DEFAULT_MEM_GB))
+    partition = arg_dict.get('partition', 'work')
+    time = arg_dict.get('time', '12:00:00')
+    account = arg_dict.get('account', '')
+    reservation = arg_dict.get('reservation', '')
+    modules = arg_dict.get('modules', [])
+
+    for name, threadsafe, container in scripts:
+        jobname = os.path.splitext(name)[0]
+        container = container or arg_dict.get('container', CONTAINER)
+        if threadsafe:
+            #Same per-script mode-override lookup write_jobs() applies for every threadsafe
+            #script -- e.g. this is what gives hi_image.py its profiled nodes=2/
+            #ntasks_per_node=8 for '32K_NE107M' (see correlator_modes.py) instead of whatever
+            #generic [[[slurm]]] nodes/ntasks_per_node this '--combine' call happened to be
+            #invoked with.
+            role = script_registry.get_properties(name).pipeline_role
+            override = slurm_config_registry.get_override(role, mode_name=correlator_mode)
+            script_nodes = override.nodes if override.nodes is not None else nodes
+            script_tasks = override.ntasks_per_node if override.ntasks_per_node is not None else ntasks_per_node
+            write_sbatch(name, '--config {0}'.format(TMP_CONFIG), nodes=script_nodes, tasks=script_tasks, mem=mem,
+                container=container, partition=partition, time=time, name=jobname, account=account,
+                reservation=reservation, modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
+        else:
+            write_sbatch(name, '--config {0}'.format(TMP_CONFIG), nodes=1, tasks=1, mem=mem, container=container,
+                partition=partition, time=time, name=jobname, account=account, reservation=reservation,
+                modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
+
+    sbatch_names = [os.path.splitext(s[0])[0] + '.sbatch' for s in scripts]
+    #write_master() itself expands the configured hi_image/hi_sofia (or science_image/
+    #cont_sofia) pair into the full per-stage/per-combo chain (expand_hi_combo_scripts()/
+    #expand_cont_image_stage_scripts()), and writes the summary/killJobs/findErrors/etc.
+    #helper scripts -- exactly the same as a single-track '-R'. Its own helper-script
+    #generation needs 'account'/'partition'/'exclude'/'reservation' (the generated cleanup
+    #script's own standalone srun() call, outside any sbatch allocation -- see srun()) --
+    #write_jobs() normally supplies this by passing its own full locals() through; reconstruct
+    #the same minimal subset here since this bypasses write_jobs() entirely.
+    slurm_kwargs = {'account': account, 'partition': partition,
+        'exclude': arg_dict.get('exclude', ''), 'reservation': reservation}
+    write_master(MASTER_SCRIPT, config, scripts=sbatch_names, submit=False, pad_length=0, verbose=False, echo=True,
+        slurm_kwargs=slurm_kwargs)
+
+    logger.info('Wrote "{0}" chaining {1}. Resource sizing beyond what correlator_modes.py has actually '
+        'profiled (see [run] correlator_mode) is an unprofiled default -- review before running '
+        '"./{0}".'.format(MASTER_SCRIPT, sbatch_names))
+
+
 def run_combine(wdir, hi_image, arg_dict):
 
     """Discover 'P<N>'-named track directories under 'wdir', resolve each one's source
-    visibility, write a trimmed combined config, and generate the sbatch that actually runs
-    the virtualconcat -- see combine_tracks.py and REFACTOR_PLAN.md's Phase 10 write-up. Does
-    not submit anything -- mirrors '-B' then '-R' both stopping short of submission, so the
-    generated config/sbatch can be reviewed before a real (potentially expensive) compute job
-    runs.
+    visibility, write a trimmed combined config, and generate the full sbatch chain (combine
+    -> HI/continuum imaging -> SoFiA) -- see combine_tracks.py, write_combine_jobs(), and
+    REFACTOR_PLAN.md's Phase 10 write-up. Does not submit anything -- mirrors '-B' then '-R'
+    both stopping short of submission, so the generated config/sbatch chain can be reviewed
+    before a real (potentially expensive) compute job runs.
 
     Arguments:
     ----------
@@ -1521,6 +1608,12 @@ def run_combine(wdir, hi_image, arg_dict):
     #would be a circular import at load time.
     import combine_tracks
 
+    #Resolved to absolute up front -- output_vis's basename (below) needs a real directory
+    #name to key off, and a relative 'wdir' (e.g. '.', the natural form when already cd'd
+    #into it) would otherwise resolve to '.', producing a near-unreadable output filename
+    #(confirmed live: '._combined.mms').
+    wdir = os.path.abspath(wdir)
+
     tracks = combine_tracks.discover_tracks(wdir)
     logger.info('Discovered {0} track(s) under "{1}": {2}'.format(
         len(tracks), wdir, [os.path.basename(t) for t in tracks]))
@@ -1528,11 +1621,11 @@ def run_combine(wdir, hi_image, arg_dict):
     source_vis = [combine_tracks.resolve_track_vis(t, hi_image) for t in tracks]
 
     output_dir = os.path.join(wdir, 'M2')
-    output_vis = '{0}_combined.mms'.format(os.path.basename(os.path.normpath(wdir)))
-    #[hi_image] is copied from the first track's own myconfig.txt -- every track in a
-    #combine set is expected to share the same [hi_image] settings (same target/correlator
-    #mode/imaging choices), only their per-track calibration differs.
-    template_config = os.path.join(tracks[0], 'myconfig.txt') if hi_image else None
+    output_vis = '{0}_combined.mms'.format(os.path.basename(wdir))
+    #[hi_image]/[run] correlator_mode are copied from the first track's own myconfig.txt --
+    #every track in a combine set is expected to share the same [hi_image] settings and
+    #correlator mode (same target/instrument setup), only their per-track calibration differs.
+    template_config = os.path.join(tracks[0], 'myconfig.txt')
 
     output_config = combine_tracks.write_combined_config(
         output_dir, tracks, source_vis, output_vis, hi_image, template_config)
@@ -1541,17 +1634,9 @@ def run_combine(wdir, hi_image, arg_dict):
     cwd = os.getcwd()
     try:
         os.chdir(output_dir)
-        write_sbatch('combine_tracks.py', '--config myconfig.txt', nodes=1, tasks=1,
-            mem=arg_dict.get('mem', DEFAULT_MEM_GB), name='combine_tracks',
-            container=arg_dict.get('container', CONTAINER), partition=arg_dict.get('partition', 'work'),
-            time=arg_dict.get('time', '12:00:00'), account=arg_dict.get('account', ''),
-            reservation=arg_dict.get('reservation', ''), modules=arg_dict.get('modules', []))
+        write_combine_jobs('myconfig.txt', hi_image, arg_dict)
     finally:
         os.chdir(cwd)
-
-    logger.info('Wrote "{0}/combine_tracks.sbatch", but will not run -- resource sizing (mem/cpus) is '
-        'an unprofiled default (see REFACTOR_PLAN.md\'s Phase 10 write-up), and virtualconcat has not '
-        'yet been verified against a real run. Review before submitting.'.format(output_dir))
 
 
 def default_config(arg_dict):
