@@ -161,7 +161,7 @@ fitspw_vwidth = 800                # Total velocity width (km/s, not half-width)
 hi_combos = [{'robust': 1.0, 'uvtaper': ''}]
 # HI cube imaging stage list -- same shape/semantics as [cont_image]'s 'stages' (see its
 # comment above). Defaults ported from the m2-image-scripts prototype (origin/HI-dev).
-stages = [{'mask': None, 'niter': 50000, 'threshold': '0.6mJy'},
+stages = [{'mask': None, 'niter': 5000, 'threshold': '0.6mJy'},
           {'mask': 'prev', 'niter': 1500000, 'threshold': '0.24mJy'}]
 cell = '2.0arcsec'
 imsize = [2048, 2048]

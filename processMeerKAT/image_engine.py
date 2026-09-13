@@ -59,6 +59,21 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
         logger.info('Image "{0}" already exists. Not overwriting, continuing to next step.'.format(outimage))
         return outimage
 
+    #Reuse an existing PSF from a previous (e.g. interrupted) call against the same
+    #imagename, rather than unconditionally recomputing it every time -- confirmed live
+    #(2026-09-12): the w-projection convolution-function gridding step alone
+    #(wprojplanes=128) took ~36 minutes for one HI cube stage, and is entirely unaffected by
+    #niter/deconvolution progress (unlike '.model'/'.residual'), so redoing it on every
+    #manual resume is pure waste. Per tclean's own docs: calcpsf=False assumes '.psf'
+    #already exists, and (since calcres defaults to True here) also needs '.sumwt' present
+    #"for normalization purposes". If the caller changed weighting/robust/wprojplanes/etc
+    #since that PSF was made, delete '<imagename>.psf'/'.sumwt' first to force a fresh one --
+    #same manual-cleanup convention as every other idempotency check in this pipeline (e.g.
+    #uvcontsub.py/combine_tracks.py's own os.path.exists() guards).
+    calcpsf = not (os.path.exists(imagename + '.psf') and os.path.exists(imagename + '.sumwt'))
+    if not calcpsf:
+        logger.info('Reusing existing "{0}.psf"/"{0}.sumwt" -- not recomputing the PSF.'.format(imagename))
+
     #Matches both prior callers' behaviour: science_image.py never set usemask explicitly
     #(CASA's own tclean default is 'user'), and the prototype's dirty-stage call set
     #usemask='user' even with no mask -- i.e. an empty user mask, not e.g. 'pb'-mode masking.
@@ -87,7 +102,7 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
         wprojplanes=wprojplanes, deconvolver=deconvolver, restoration=True,
         weighting=weighting, robust=robust, niter=niter, scales=scales,
         restfreq=restfreq, uvtaper=uvtaper, spw=spw, threshold=threshold, nterms=nterms,
-        calcpsf=True, mask=maskarg, usemask=usemask, pbcor=False, pblimit=-1,
+        calcpsf=calcpsf, mask=maskarg, usemask=usemask, pbcor=False, pblimit=-1,
         restoringbeam=restoringbeam, gain=0.1, parallel=True, outlierfile=outlierfile)
 
     #Cube-specific tclean kwargs. parallel=True (the kwargs default above) was disabled here for
