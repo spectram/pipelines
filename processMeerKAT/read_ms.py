@@ -484,6 +484,25 @@ def main():
         imspw_high = round(centralfreq_mhz + imspw_halfwidth, 4)
         config_parser.overwrite_config(args.config, conf_dict={'imspw': "'*:{0}~{1}MHz'".format(imspw_low, imspw_high)}, conf_sec='hi_image')
 
+        #SoFiA's spectral kernel/linker parameters (channel units) only match
+        #default_hi_sofmask.txt's shipped defaults' intent when the mode's own chanbin gives
+        #the channel width they were tuned for -- see correlator_modes.py's own comment on
+        #this mode's 'sofia_kernelsZ'/'sofia_linker_radiusZ'/'sofia_linker_minSizeZ' entries
+        #for the live-confirmed 3-vs-18-detection story behind these values. Applied to both
+        #SoFiA passes; unconditional (like nspw/chanbin/imspw above), not merged with any
+        #pre-existing sofia_mask_params/sofia_final_params dict value -- consistent with this
+        #function's other mode-driven '-B'-time defaults.
+        if mode is not None and 'sofia_kernelsZ' in mode:
+            hi_image_cfg = config_parser.parse_config(args.config)[0].get('hi_image', {})
+            for params_key in ('sofia_mask_params', 'sofia_final_params'):
+                params = dict(hi_image_cfg.get(params_key, {}))
+                params['scfind.kernelsZ'] = mode['sofia_kernelsZ']
+                params['linker.radiusZ'] = mode['sofia_linker_radiusZ']
+                params['linker.minSizeZ'] = mode['sofia_linker_minSizeZ']
+                config_parser.overwrite_config(args.config, conf_dict={params_key: repr(params)}, conf_sec='hi_image')
+            logger.info("Defaulting SoFiA scfind.kernelsZ={0}, linker.radiusZ={1}, linker.minSizeZ={2} for correlator mode '{3}' (chanbin={4}).".format(
+                mode['sofia_kernelsZ'], mode['sofia_linker_radiusZ'], mode['sofia_linker_minSizeZ'], mode['name'], mode['chanbin']))
+
     #Auto-estimate [contsub] target_velocity whenever contsub will actually run (-H or
     #--contsub), reusing centralfreq_mhz -- never overrides it if the user already set it
     #explicitly. Left blank, it's derived from centralfreq_mhz on the assumption the observed

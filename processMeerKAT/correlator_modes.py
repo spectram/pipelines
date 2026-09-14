@@ -76,6 +76,27 @@ MODES = {
             'selfcal_part1': {'nodes': 2, 'ntasks_per_node': 8},
             'hi_image': {'nodes': 2, 'ntasks_per_node': 8},
         },
+        #SoFiA's S+C finder ('scfind.kernelsZ') and linker ('linker.radiusZ'/'linker.minSizeZ')
+        #spectral parameters are expressed in channel units (SoFiA-2 User Manual), so
+        #default_hi_sofmask.txt's shipped defaults (kernelsZ=[0,3,5,7], radiusZ=minSizeZ=1) only
+        #mean what they were tuned for -- roughly matched-filtering a ~17-40km/s line width --
+        #at the ~5.6km/s/channel resolution they assumed. This mode's own chanbin=2 default
+        #instead gives ~1.4km/s/channel (native ChanWid=3.265kHz => ~0.689km/s/channel at the HI
+        #line, halved by chanbin=2) -- almost exactly 4x finer, so those channel-count values
+        #now correspond to spectral scales ~4x narrower than intended, chronically under-
+        #matching real line widths. Confirmed live (N4064, 2026-09-14): the unscaled defaults
+        #found only 3 sources running SoFiA's masking pass standalone against the real 4-track
+        #combined stage0 image; scaling kernelsZ/radiusZ/minSizeZ by this same 4x (kernelsZ
+        #rounded to the nearest odd values SoFiA requires) found 18, including the known target
+        #at its correct catalogued position (SoFiA J120411.03+182638.1 vs NGC4064's real
+        #RA12h04m11s/Dec+18d26m38s). Applied by read_ms.py to both SoFiA passes
+        #(sofia_mask_params/sofia_final_params) -- [hi_image] rebin_factor's spectral factor is
+        #always 1 (spatial-only rebinning), so the final pass's cube has the same channel width
+        #as the masking pass's. Only meaningful with this mode's own chanbin=2 default -- revisit
+        #if chanbin is ever overridden away from 2 for this mode.
+        'sofia_kernelsZ': '0, 11, 19, 27',
+        'sofia_linker_radiusZ': 4,
+        'sofia_linker_minSizeZ': 4,
     },
 }
 
