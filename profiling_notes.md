@@ -362,3 +362,140 @@ version) before Phase 7b's checkpoint-chaining design is finalized — a checkpo
 mechanism built only around "walltime naturally runs out" doesn't help if the job can stall
 productively-idle for most of an allocation first. See REFACTOR_PLAN.md's Status section for
 where this stands.
+
+## N4064 — 4-track combine (Phase 10a), `hi_image` stage0/stage1 root-causing
+
+Real production combine of `P1`-`P4` (`N4064/M2/N4064_combined.mms`, `virtualconcat` of all
+four tracks' `.contsub` output, 1.8TB) into the first `-H` run against genuinely combined
+data, not a single track. Surfaced two distinct, previously-undiagnosed `hi_image.py`
+failure modes — neither is the silent mid-cycle stall documented in the `P1_test` section
+above; **that specific symptom (log output stops entirely, process still holds its
+allocation) remains unexplained** — but both are real, independently confirmed root causes
+worth fixing regardless.
+
+### `virtualconcat`'s own `keepcopy=True` is broken for any `vis` path containing `/`
+
+Found live, the hard way: job 48601306 (`combine_tracks.py`) failed in 15s with
+`FileNotFoundError`, and in the process had already `shutil.move()`'d P1's real 459GB
+`.contsub` out of its own directory into a `concat_tmp_*` staging dir before crashing (real
+production data briefly stranded, not lost — recovered by moving it back once confirmed
+byte-identical in size). Root cause confirmed by reading the container's own
+`task_virtualconcat.py`: `keepcopy=True`'s backup dance does
+`shutil.move(elvis, tempdir)` (lands at `tempdir/<basename>`, since `shutil.move()` to a
+directory target uses `os.path.basename`) then tries to restore via
+`shutil.copytree(tempdir+"/"+elvis, elvis, True)` — a bare string concat of the *full*
+original path, not its basename. Only correct when every `vis` entry is already a bare
+filename in `cwd`; broken whenever (as here) each track's `.contsub` lives in its own
+directory. Fixed in `combine_tracks.py` by making disposable local copies first and calling
+`virtualconcat(..., keepcopy=False)` instead (sidesteps the broken CASA code path
+entirely) — see git history (`combine_tracks.py`). The actual combine (job 48602062, after
+the fix) took 1h47m26s for all 4 tracks (copy + concat).
+
+### `hi_image` stage0 (mask pass, `niter=50000`, unmasked): TIMEOUT, but *not* the earlier hang — genuine noise-chasing
+
+Job 48630856: ran the full 24h without crashing, still visibly iterating at every check
+(confirmed live, two checks 20s apart both showed advancing iteration counters) — not a
+stall. By the end, **every** channel batch was logging `Possible divergence. Peak residual
+increased by 10% from minimum.`, and the cube's overall residual rms (0.169mJy, robust
+`medabsdevmed` 0.080mJy) was already at/below the configured `threshold=0.6mJy`. Cause:
+`stages[0].mask=None` means tclean cleans the *entire* 2048×2048×1263-channel cube fully
+unmasked — the overwhelming majority of those 1263 channels are pure noise (a single
+galaxy's real HI line occupies a small fraction of even the ~800km/s `fitspw_vwidth`
+exclusion window, let alone the full 6MHz imaging band), so blind cleaning toward a
+threshold already near the noise floor is the textbook recipe for exactly this symptom.
+
+**Fix**: dropped stage0's `niter` 50000→5000 (both `default_config.txt`'s default and the
+live run's config) — deliberately kept unmasked/blind for now, per direction, rather than
+switching to `usemask='auto-multithresh'`. Rerun (job 48714723, `niter=5000`, PSF reused —
+see below): **completed in 5h35m58s** (vs. the 24h timeout). `hi_sofia`'s masking pass on
+its output (job 48714724): 10m47s, found only **3 sources** (see below for why).
+
+### `image_engine.py` was unconditionally recomputing the PSF on every call, even a resume
+
+`run_stage()` hardcoded `calcpsf=True`. Confirmed via `tclean`'s own docs
+(`help(tclean)`, queried live): `calcpsf=False` is valid and correct whenever `.psf`/
+`.sumwt` already exist on disk for the target `imagename` — and the PSF (a pure function of
+gridding/weighting/uv-coverage) is completely independent of `niter`/deconvolution
+progress, so redoing it on every manual resume is pure waste. The `WPConvFunc::
+findConvFunction` step alone (`wprojplanes=128`) took ~36min the first time. Fixed: detect
+`.psf`+`.sumwt` on disk and pass `calcpsf=False` (falls back to `True`/full recompute
+otherwise) — same "clear stale output to force a redo" convention as this pipeline's other
+idempotency checks if imaging params change between runs. Confirmed working on both stage0's
+niter=5000 rerun and stage1's mask-swap rerun below (`tclean(...calcpsf=False...)` in both
+logs).
+
+### `hi_image` stage1 (deep clean, `niter=1,500,000`, `mask='prev'`): TIMEOUT — but root cause was *zero* minor-cycle iterations, not slow regridding
+
+Job 48714725: TIMEOUT at 24h00m08s, only 7 real major cycles (**not** 209 — an early
+misread that conflated `"Run multiscale minor-cycle"` per-channel-batch log lines with real
+`"Run Major Cycle"` counts; stage0's real major-cycle count was only 2, comparably
+expensive per-cycle to stage1's 7, so major-cycle cost itself isn't the anomaly it first
+looked like). The actual finding, from grepping every `SDAlgorithmBase::deconvolve` line
+(9,102 of them): **all of them** read `iters=0->0 [0], model=0->0, peakres=0->0, Reached
+cyclethreshold` — zero deconvolution iterations, on every channel, every attempt, for the
+full 24h. `hi_sofia`'s masking-pass mask (`hi_combo0/stage0_mask.fits`, from stage0's
+niter=5000 output) contained only **3 detections** in the entire cube (confirmed via the
+SoFiA VOTable catalog) — with so little masked area, the residual inside it is trivially
+already below threshold, so every attempted minor cycle instantly reports "nothing to do."
+But `niter=1,500,000`/`nmajor=-1` (no cap) gives `tclean` no stopping criterion tied to "no
+progress" — so it just kept re-gridding the full 51M-row, 1263-channel dataset from scratch,
+forever, for zero benefit, until walltime killed it. **This is a genuinely different
+symptom from the earlier P1_test stall** (that one went silent for ~8h mid-minor-cycle;
+this one logged normally on every attempt, just accomplished nothing) — worth keeping them
+as separate open questions rather than assuming one explains the other. An `nmajor` cap
+(not yet applied) would be the direct fix for *this* specific failure mode, independent of
+mask quality.
+
+### Root cause of the sparse (3-detection) mask: SoFiA's spectral kernel/linker params are in channel units, mismatched by exactly 4x
+
+`scfind.kernelsZ` (S+C finder spectral smoothing) and `linker.radiusZ`/`linker.minSizeZ`
+(friends-of-friends merging/size thresholds) are all expressed in **channel units**
+(confirmed against the SoFiA-2 User Manual, fetched and read directly — S/N is only
+maximized "when the spatial and spectral convolution filter size matches the spatial and
+spectral extent of the source"). `default_hi_sofmask.txt`'s shipped defaults
+(`kernelsZ=[0,3,5,7]`, `radiusZ=minSizeZ=1`) were tuned assuming ~5.6km/s/channel. This
+pipeline's own `32K_NE107M`+`chanbin=2` default instead gives ~1.4km/s/channel (native
+`ChanWid`=3.265kHz → ~0.689km/s/channel at the HI line via the radio velocity formula,
+halved by `chanbin=2`) — **exactly 4x finer** (5.6/1.4 = 4.0 exactly). The old kernels were
+testing spectral scales ~4x too narrow for the real line width, chronically
+under-detecting — consistent with `P1_test`'s own earlier `hi_sofia` run (single track,
+same mode/chanbin) finding only 5 sources despite less combined sensitivity than this
+4-track run's 3.
+
+**Standalone test** (not through the pipeline — ran `sofia` directly via the SoFiA
+container against the real `hi_combo0/stage0.fits`, in an isolated scratch directory,
+production untouched): scaled `kernelsZ`→`[0,11,19,27]` (4x, rounded to nearest odd per
+SoFiA's requirement) and `linker.radiusZ`/`minSizeZ`→4 (exact 4x, no odd-value
+requirement). First attempt (job, 32GB mem) OOM'd — badly under-provisioned; the production
+run needed ~129GB for the *same* cube size even with the old, narrower kernels (one
+full-cube-sized smoothed copy per kernel combination is made regardless of kernel width, so
+memory doesn't meaningfully track kernel size). Rerun at 140GB (job 48771810): **completed
+in 8m39s, found 18 detections** (vs. the original 3) — including the known target at its
+correct catalogued position (`SoFiA J120411.03+182638.1` vs. NGC4064's real
+RA12h04m11s/Dec+18d26m38s), strong evidence the extra detections are real structure, not
+noise inflation from wider kernels. A moment-maps rerun (job 48772247, `output.
+writeMoments=true`) reproduced the same 18 detections in 8m28s — confirms determinism, and
+that moment-map generation adds negligible cost.
+
+**Fix applied**: wired as a `correlator_modes.py` `MODES['32K_NE107M']` entry
+(`sofia_kernelsZ`/`sofia_linker_radiusZ`/`sofia_linker_minSizeZ`), applied by `read_ms.py`
+at `-B` time to *both* `sofia_mask_params` and `sofia_final_params` (the final pass's cube
+has the same channel width, since `[hi_image] rebin_factor`'s spectral factor is always 1 —
+spatial-only rebinning) — same mode-driven-default architecture as the existing
+`chanbin`/`nspw`/`imspw` overrides. Only meaningful for this mode's own `chanbin=2`
+default; would need revisiting if `chanbin` is ever overridden away from 2 for this mode.
+See git history (`correlator_modes.py`/`read_ms.py`).
+
+**Live validation (in progress)**: swapped `N4064/M2`'s `stage0_mask.fits` for the
+18-detection output (original preserved as `stage0_mask.orig3det.fits`), cleared stage1's
+stale `.model`/`.residual`/`.mask` (kept `.psf`/`.sumwt`/`.pb` for reuse via the calcpsf fix
+above), and resubmitted `hi_image.py` standalone for just stage1 (not the full chain —
+`.config.tmp`'s `[hi_image] stage` was already `1` from `hi_sofia`'s earlier completion).
+Job 48773575: confirmed `calcpsf=False` in the actual `tclean` call (PSF correctly reused).
+As of 13h elapsed: genuinely different from both earlier stage1 failure modes — real,
+non-trivial minor-cycle iterations (100-235/channel/major-cycle, vs. the original's uniform
+zero), model flux meaningfully accumulating (~0.02 Jy, vs. ~1.6e-6 Jy rms previously),
+`peakres` converging cleanly down to the configured `threshold=0.24mJy` and correctly
+stopping there (`Reached cyclethreshold` off real iteration counts, not an instant no-op),
+zero `Possible divergence` warnings. Still running — update this note with the final
+outcome once it completes or times out.
