@@ -74,6 +74,7 @@ def main(args, taskvals):
     weighting = va(taskvals, 'hi_image', 'weighting', str)
     restfreq = va(taskvals, 'hi_image', 'restfreq', str)
     imspw = va(taskvals, 'hi_image', 'imspw', str)
+    nmajor = va(taskvals, 'hi_image', 'nmajor', int, default=-1)
 
     logger.info('Imaging combo {0}/{1} (robust={2}, uvtaper={3!r}), stage {4}/{5}.'.format(
         combo, len(hi_combos)-1, robust, uvtaper, stage, len(stages)-1))
@@ -90,7 +91,7 @@ def main(args, taskvals):
         imsize=imsize, cell=cell, robust=robust, uvtaper=uvtaper, scales=scales,
         gridder=gridder, wprojplanes=wprojplanes, deconvolver=deconvolver,
         weighting=weighting, specmode='cube', restfreq=restfreq, spw=imspw,
-        nterms=1, stokes='I', restoringbeam='')
+        nterms=1, stokes='I', restoringbeam='', nmajor=nmajor)
 
     if image_stages.is_final(stages, stage):
         rebin = va(taskvals, 'hi_image', 'rebin', bool, default=False)

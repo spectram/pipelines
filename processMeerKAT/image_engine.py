@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvtaper, scales, gridder,
               wprojplanes, deconvolver, weighting, specmode, restfreq, spw, nterms, stokes, restoringbeam,
-              outlierfile=''):
+              outlierfile='', nmajor=-1):
 
     """Run one imaging stage's `tclean` call. Idempotent (skips if the output image already
     exists), matching the pre-existing `science_image.py`/selfcal convention.
@@ -47,6 +47,18 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
     outlierfile : str, optional
         Passed straight through to `tclean()` (continuum-only -- see `[cont_image]
         outlierfile`; HI imaging doesn't use this).
+    nmajor : int, optional
+        Passed straight through to `tclean()` -- caps the number of major cycles *this call*
+        will run (-1, the default, is CASA's own "no limit"). Confirmed live (N4064
+        combined-track deep clean, 2026-09-15): once most/all channels converge, `tclean` has
+        no stopping criterion for "nothing left to clean" -- each subsequent major cycle
+        still fully re-grids the whole dataset (a `Reached cyclethreshold` no-op per channel)
+        for zero benefit, indistinguishable from real progress until you inspect individual
+        `SDAlgorithmBase::deconvolve` log lines. A finite cap turns that wasted tail into a
+        graceful `tclean()` return (this function's caller still gets a usable `outimage`,
+        just possibly short of full convergence) instead of a walltime SIGKILL with no output
+        at all. Only meaningful on a stage whose real per-cycle cost is high enough that
+        wasted cycles matter (e.g. this cube's deep-clean stage, not a fast mask pass).
 
     Returns:
     --------
@@ -73,6 +85,21 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
     calcpsf = not (os.path.exists(imagename + '.psf') and os.path.exists(imagename + '.sumwt'))
     if not calcpsf:
         logger.info('Reusing existing "{0}.psf"/"{0}.sumwt" -- not recomputing the PSF.'.format(imagename))
+
+    #Same idea, for the *deconvolution* state rather than the PSF: a walltime-killed call
+    #leaves a real, valid '.model'/'.residual' behind (mid-major-cycle SLURM kills still
+    #flush the underlying CASA tables) -- calcres=False resumes minor-cycle work from that
+    #state directly, per tclean's own docs ("assume a .residual image already exists"),
+    #instead of re-deriving the initial residual (a real gridding pass, not free) from
+    #scratch. Only valid when BOTH exist -- '.model' alone (e.g. after a deliberate reset,
+    #see calcpsf's own comment on forcing a fresh start) isn't enough for tclean's own
+    #contract. Distinct from calcpsf's reuse: a walltime kill mid-run leaves the PSF *and*
+    #residual/model all still valid; a deliberate reset (different mask/params) clears
+    #'.model'/'.residual'/'.mask' but may deliberately keep '.psf'/'.sumwt' if the gridding
+    #geometry itself is unchanged -- see this pipeline's hi_image.py resume history.
+    calcres = not (os.path.exists(imagename + '.residual') and os.path.exists(imagename + '.model'))
+    if not calcres:
+        logger.info('Reusing existing "{0}.residual"/"{0}.model" -- resuming minor-cycle work, not restarting.'.format(imagename))
 
     #Matches both prior callers' behaviour: science_image.py never set usemask explicitly
     #(CASA's own tclean default is 'user'), and the prototype's dirty-stage call set
@@ -102,8 +129,9 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
         wprojplanes=wprojplanes, deconvolver=deconvolver, restoration=True,
         weighting=weighting, robust=robust, niter=niter, scales=scales,
         restfreq=restfreq, uvtaper=uvtaper, spw=spw, threshold=threshold, nterms=nterms,
-        calcpsf=calcpsf, mask=maskarg, usemask=usemask, pbcor=False, pblimit=-1,
-        restoringbeam=restoringbeam, gain=0.1, parallel=True, outlierfile=outlierfile)
+        calcpsf=calcpsf, calcres=calcres, nmajor=nmajor, mask=maskarg, usemask=usemask,
+        pbcor=False, pblimit=-1, restoringbeam=restoringbeam, gain=0.1, parallel=True,
+        outlierfile=outlierfile)
 
     #Cube-specific tclean kwargs. parallel=True (the kwargs default above) was disabled here for
     #cube mode by an older CASA MPI cube-imaging bug workaround (science_image.py's original

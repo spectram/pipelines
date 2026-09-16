@@ -172,6 +172,7 @@ deconvolver = 'multiscale'
 weighting = 'briggs'
 restfreq = '1420.406MHz'           # HI line (change for other emission lines - e.g. OH) -- own copy, not read from [cont_image]
 imspw = ''                        # SPW to select for imaging -- own copy, not read from [cont_image]. When [-H --hi_image] is set, read_ms.py (via correlator_modes.py) fills this in with a default band centred on [-F --centralspw] or the MS's own centre frequency -- see correlator_modes.py.
+nmajor = -1                        # Cap on tclean() major cycles per hi_image.py call (-1: no limit, CASA's own default). Confirmed live (N4064, 2026-09-15): once most/all channels converge, tclean has no stopping criterion for "nothing left to clean" and keeps re-gridding the whole dataset for zero benefit -- a finite cap turns that wasted tail into a graceful return (still produces a usable image, just possibly short of full convergence) instead of a walltime SIGKILL with no output. Only worth setting on a stage whose real per-cycle cost is high enough that wasted cycles matter (e.g. a deep-clean stage, not a fast mask pass).
 rebin = True                      # Rebin the final stage's cube before export?
 rebin_factor = [2, 2, 1]          # imrebin() factor, only used when rebin=True
 pb_correct = False                # Apply katbeam PB-correction to the final stage's cube before export?
