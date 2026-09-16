@@ -124,6 +124,20 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
         maskarg = immask
         usemask = 'user'
 
+    #tclean itself refuses a fresh 'mask=' argument once '<imagename>.mask' already exists
+    #from an earlier call against this same imagename -- confirmed live (2026-09-16,
+    #RuntimeError: "Mask image ... exists, but a specific input mask ... has also been
+    #supplied. Please either reset mask='' to reuse the existing mask, or delete
+    #<imagename>.mask before restarting"). On a genuine resume (calcres=False -- real
+    #minor-cycle progress being continued, see its own comment above) that '.mask' is
+    #exactly the region mask this call's own 'mask' FITS/CASA-image was already imported
+    #into on the original, interrupted call -- reuse it (mask='') rather than re-supplying
+    #the same source again. A deliberate reset still clears '.mask' alongside
+    #'.model'/'.residual' (see calcres's own comment), so this only fires for a true resume.
+    if not calcres and os.path.exists(imagename + '.mask'):
+        logger.info('Reusing existing "{0}.mask" -- not re-supplying mask="{1}".'.format(imagename, maskarg))
+        maskarg = ''
+
     kwargs = dict(vis=vis, selectdata=False, datacolumn='corrected', imagename=imagename,
         imsize=imsize, cell=cell, stokes=stokes, gridder=gridder, specmode=specmode,
         wprojplanes=wprojplanes, deconvolver=deconvolver, restoration=True,
