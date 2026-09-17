@@ -486,16 +486,71 @@ spatial-only rebinning) — same mode-driven-default architecture as the existin
 default; would need revisiting if `chanbin` is ever overridden away from 2 for this mode.
 See git history (`correlator_modes.py`/`read_ms.py`).
 
-**Live validation (in progress)**: swapped `N4064/M2`'s `stage0_mask.fits` for the
-18-detection output (original preserved as `stage0_mask.orig3det.fits`), cleared stage1's
-stale `.model`/`.residual`/`.mask` (kept `.psf`/`.sumwt`/`.pb` for reuse via the calcpsf fix
+**Live validation, round 1**: swapped `N4064/M2`'s `stage0_mask.fits` for the 18-detection
+output (original preserved as `stage0_mask.orig3det.fits`), cleared stage1's stale
+`.model`/`.residual`/`.mask` (kept `.psf`/`.sumwt`/`.pb` for reuse via the calcpsf fix
 above), and resubmitted `hi_image.py` standalone for just stage1 (not the full chain —
 `.config.tmp`'s `[hi_image] stage` was already `1` from `hi_sofia`'s earlier completion).
 Job 48773575: confirmed `calcpsf=False` in the actual `tclean` call (PSF correctly reused).
-As of 13h elapsed: genuinely different from both earlier stage1 failure modes — real,
-non-trivial minor-cycle iterations (100-235/channel/major-cycle, vs. the original's uniform
-zero), model flux meaningfully accumulating (~0.02 Jy, vs. ~1.6e-6 Jy rms previously),
-`peakres` converging cleanly down to the configured `threshold=0.24mJy` and correctly
-stopping there (`Reached cyclethreshold` off real iteration counts, not an instant no-op),
-zero `Possible divergence` warnings. Still running — update this note with the final
-outcome once it completes or times out.
+Genuinely different from both earlier stage1 failure modes — real, non-trivial minor-cycle
+iterations (100-235/channel/major-cycle, vs. the original's uniform zero), model flux
+meaningfully accumulating (~0.02 Jy, vs. ~1.6e-6 Jy rms previously), `peakres` converging
+cleanly down to the configured `threshold=0.24mJy` and correctly stopping there
+(`Reached cyclethreshold` off real iteration counts, not an instant no-op), zero
+`Possible divergence` warnings. **But it still timed out at 24h00m13s** — real progress
+(6 major cycles, mixed converged/still-working channels, ~73%/27% split near the end) but
+not enough wall-clock to finish. Per user direction ("only the cluster operators can extend
+the time... we will restart after"), let it run to the wall deliberately rather than kill it
+early, then resumed rather than reset.
+
+**Extending PSF-reuse to `.residual`/`.model`/`.mask` for the resume, and a new `nmajor` cap**:
+`image_engine.run_stage()`'s `calcpsf` reuse (above) only covered the PSF; this resume needed
+the *deconvolution* state reused too, since 24h of real convergence progress was sitting in
+`.model`/`.residual` and shouldn't be discarded. Added `calcres=False` whenever both
+`.residual` and `.model` already exist (mirrors `calcpsf`'s own logic) -- confirmed via
+`tclean`'s own docs (`calcres=False` "assume[s] a `.residual` image already exists"). First
+resume attempt (job 49113578) crashed in 2m15s: `tclean` refuses a fresh `mask=` argument once
+`<imagename>.mask` already exists from the earlier call ("Mask image ... exists, but a
+specific input mask ... has also been supplied. Please either reset mask='' to reuse the
+existing mask, or delete `<imagename>.mask` before restarting") -- not something the original
+calcpsf-only reuse ever hit, since that resume pattern (stage0, stage1's first-ever run)
+always started from a `.mask`-free state. Fixed: force `mask=''` whenever `calcres=False` and
+`.mask` already exists. Also added an `nmajor` cap (`[hi_image] nmajor`, default -1) as a
+direct fix for the "converged but keeps re-gridding forever" pattern the earlier root-causing
+found -- set to 15 for this resume (comfortably above the 6-7 cycles a full run needed, per
+the timing table above).
+
+**Resume, round 2 (job 49113961) -- completed successfully in 21h05m.** Confirmed all three
+fixes fired correctly in the actual `tclean` call: `calcpsf=False`, `calcres=False`, `mask=''`,
+`nmajor=15`. Converged naturally in **6 major cycles** (well under the 15 cap -- a real
+convergence, not an artificial cutoff), producing `hi_combo0/fincubes/stage1.image_rebin.im.fits`
+(rebinned to `[1024,1024,1263]`, common beam BMAJ=0.006530deg/BMIN=0.004112deg/BPA=-10.220deg,
+spectral axis converted to optical velocity -- both independently confirmed from the FITS
+header, not just the log). `hi_sofia`'s final pass (job 49344834) then ran on that export in
+2m22s, using dynamically-estimated spatial kernels (`scfind.kernelsXY = 0, 2, 5.88`, from the
+collapsed beam) and the same 4x-scaled `scfind.kernelsZ`/`linker.radiusZ`/`linker.minSizeZ`
+(hand-patched into this run's `sofia_final_params`, since `combine_tracks.py`'s config
+template-copy never goes through `read_ms.py`'s new mode-aware default -- see above), plus a
+stricter `reliability.threshold=0.95` (vs. the masking-pass test's `0.9`): **2 detections**,
+both independently confirmed against the earlier 18-detection masking-pass test at matching
+positions, including the known target (`SoFiA J120411.14+182636.3`, matching NGC4064's real
+RA12h04m11s/Dec+18d26m38s). The count drop from 18->2 is expected, not a regression: a
+properly beam-matched (tighter) spatial kernel, a stricter reliability threshold, and a
+genuinely cleaner (deep-cleaned, masked) input image than the earlier test's shallow,
+fully-unmasked stage0 image, all push toward fewer but more robust detections.
+
+**Also found and fixed while inspecting the final output**: `hi_sofia.py`/`cont_sofia.py`'s
+final pass was writing its own outputs (mask/catalog/moments/cubelets/noise/plots) directly
+into `hi_combo0/` rather than `hi_combo0/fincubes/` alongside the rebinned science cube they
+were derived from -- both scripts reused a single `output_dir` value for both the copied
+param file's own location (correctly `combo_dir`) and SoFiA's own `output.directory` (should
+track the final export instead). Fixed for both HI and continuum imaging; relocated this run's
+already-produced files to match.
+
+**Full HI cube imaging chain for a real, 4-track combined dataset now runs end-to-end** --
+combine -> stage0 (niter=5000, unmasked) -> masking-pass SoFiA (kernel-fixed, 3 detections
+from the shallow stage0 image) -> stage1 deep clean (resumed once, `nmajor`-capped) -> final
+SoFiA pass (2 robust detections). `P1_test`'s original silent-8h-mid-cycle stall (the "Update"
+section above) was never reproduced or explained by any of this -- it remains open, and none
+of these three fixes (niter, PSF/residual/mask reuse, nmajor cap) should be assumed to cover
+that specific failure mode too until it's actually seen again and checked against them.

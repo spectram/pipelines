@@ -189,6 +189,87 @@ non-blank by the user is never overridden. `[contsub]` keeps its own `restfreq` 
 *line*, e.g. HI's 1420.406MHz — a physical constant, not tied to any galaxy's velocity) rather than reading
 `[hi_image]`'s, since `--contsub` can run standalone without `[hi_image]` ever being touched.
 
+### Multi-track combining (`--combine`)
+
+`processMeerKAT.py --combine <dir> [-H]` combines several already-run tracks' output (sibling `P<N>`
+run directories under `<dir>`) into one MS via `virtualconcat`, for imaging as a single, deeper dataset.
+Deliberately standalone — not part of the `-B`/`-R` DAG (no per-run-directory scoping exists for a tool
+that reads across multiple independent run directories) and not registered in `script_registry.py`.
+`write_combine_jobs()` (in `processMeerKAT.py`) reuses the same DAG-generation machinery `-R` uses for a
+single track — `write_sbatch()` (including `slurm_config_registry`'s per-correlator-mode resource
+overrides) and `write_master()` (including `expand_hi_combo_scripts()`'s per-stage/per-combo replication
+and the summary/killJobs/findErrors/etc. helper scripts) — to build a full `submit_pipeline.sh` chaining
+`combine_tracks.py` → `hi_image.py`/`hi_sofia.py` (or `science_image.py`/`cont_sofia.py` for continuum),
+minus the crosscal/selfcal machinery that doesn't apply to an already-calibrated, already-concatenated MS
+(`combine_tracks.write_combined_config()` writes a minimal `[crosscal] spw=''`/`nspw=1` stub instead,
+since `bookkeeping.run_script()` unconditionally validates those two keys regardless of DAG shape).
+`[data] vis` and `[run] hi_contsub_vis`/`post_selfcal_vis` must both be bare filenames (not
+`os.path.join`'d with the output directory) — every script that reads them runs with cwd already at that
+output directory, and embedding the directory a second time silently doubles it up.
+
+**`virtualconcat`'s own `keepcopy=True` is broken for any `vis` path containing a `/`** — confirmed live
+via a real `FileNotFoundError` mid-combine that briefly stranded a real 459GB per-track `.contsub` output
+(moved but not restored) before crashing. Its backup dance does `shutil.move(elvis, tempdir)` (lands at
+`tempdir/<basename>`, since `shutil.move()` to a directory target uses `os.path.basename`) then tries to
+restore via `shutil.copytree(tempdir+"/"+elvis, elvis, True)` — a bare string concat of the *full*
+original path, not its basename. Only correct when every `vis` entry is already a bare filename in `cwd`
+— never true here, since each track's `.contsub` lives in its own directory. `combine_tracks.py` works
+around this entirely: makes its own disposable local copies of each track's `.contsub` first, then calls
+`virtualconcat(..., keepcopy=False)` (skipping CASA's broken backup block completely) — one extra copy
+pass, but the true per-track originals are never touched by the broken code path.
+
+### HI/continuum cube imaging: PSF/residual/mask reuse on resume, and `nmajor`
+
+`image_engine.run_stage()` (shared by `hi_image.py`/`science_image.py`) is idempotent at the whole-stage
+level (skips entirely if `<imagename>.image` already exists) but also reuses partial `tclean` state
+*within* an incomplete stage, rather than always restarting from scratch — confirmed live this matters a
+lot: a stage's `WPConvFunc::findConvFunction` (PSF/w-projection derivation) step alone took ~36 minutes
+on one HI cube, entirely wasted on every manual resume before this existed, since it's independent of
+`niter`/deconvolution progress.
+
+- `calcpsf=False` whenever `<imagename>.psf`/`.sumwt` already exist.
+- `calcres=False` whenever *both* `<imagename>.residual` and `.model` already exist — resumes minor-cycle
+  work directly instead of recomputing the initial residual (a real gridding pass) from scratch.
+- When resuming (`calcres=False`) and `<imagename>.mask` already exists too, `mask=''` is passed instead
+  of re-supplying the FITS/CASA-image mask a second time — `tclean` itself refuses a fresh `mask=`
+  argument once `.mask` already exists ("Please either reset mask='' to reuse the existing mask, or
+  delete `<imagename>.mask` before restarting"), found on the very first live resume attempt.
+- All three checks are pure `os.path.exists()`, same "clear stale output to force a redo" convention as
+  every other idempotency check in this pipeline: if imaging params (mask, weighting, robust,
+  wprojplanes, ...) changed since a prior attempt, delete the relevant `<imagename>.*` first.
+- `[hi_image] nmajor` (default `-1`, unlimited, threaded through to `tclean()`) caps major cycles per
+  call. Confirmed live: once most/all channels in a cube converge, `tclean` has no stopping criterion for
+  "nothing left to clean" — it keeps re-gridding the *entire* dataset every major cycle for zero benefit,
+  indistinguishable from real progress without reading individual `SDAlgorithmBase::deconvolve` log lines
+  (`iters=0->0 ... Reached cyclethreshold` on every channel, every cycle). A finite cap turns that wasted
+  tail into a graceful return with a usable (if possibly short-of-convergence) image, instead of a
+  walltime `SIGKILL` with nothing exported.
+
+**SoFiA output placement**: `hi_sofia.py`/`cont_sofia.py`'s masking pass must write its mask directly into
+the combo/stage's own top-level directory (`resolve_mask()` hard-codes `<imagename_fn(stage-1)>_mask.fits`
+there for the *next* stage's `mask='prev'` lookup) — but the *final* pass's outputs
+(mask/catalog/moments/cubelets/noise/plots) go into `<combo_dir>/fincubes/`, alongside the rebinned,
+beam-collapsed, velocity-converted science cube (`image_engine.finalize_stage()`'s own export) they were
+derived from, not scattered into the combo directory directly.
+
+### SoFiA spectral kernel/linker parameters are channel-unit, and must match the mode's real channel width
+
+`scfind.kernelsZ` (S+C finder spectral smoothing) and `linker.radiusZ`/`linker.minSizeZ` (friends-of-
+friends merging/size thresholds), in `default_hi_sofmask.txt`, are expressed in **channel units** (SoFiA-2
+User Manual), tuned for ~5.6km/s/channel. A correlator mode with a different effective channel width
+(native `ChanWid` × `chanbin`) needs these rescaled to match the same real line-width intent, or SoFiA
+chronically under-detects — confirmed live (N4064, `32K_NE107M`+`chanbin=2`, ~1.4km/s/channel, a clean 4x
+mismatch): the unscaled defaults found only 3 sources running SoFiA standalone against a real combined-
+track cube; scaling `kernelsZ`/`radiusZ`/`minSizeZ` by that same 4x (kernelsZ rounded to the nearest odd
+values SoFiA requires) found 18, including the known target at its correct catalogued position.
+`correlator_modes.py`'s `MODES` entries can carry `sofia_kernelsZ`/`sofia_linker_radiusZ`/
+`sofia_linker_minSizeZ`, applied by `read_ms.py` at `-B` time to both `sofia_mask_params` and
+`sofia_final_params` — same mode-driven-default pattern as `chanbin`/`nspw`/`imspw`, and equally only
+meaningful for that mode's own `chanbin` default (revisit if `chanbin` is ever overridden). **Only fires
+on a real `-B` run** — a config built via `combine_tracks.py`'s own `[hi_image]` template-copy (not a
+real `-B` against an MS) never goes through `read_ms.py` at all, so it needs the same override applied by
+hand if the template it copied from predates this mechanism.
+
 ### SPW-level parallelism is separate from MPI parallelism
 
 When `[crosscal] nspw > 1`, `partition`-named scripts get a SLURM `--array` job (one array task per SPW
@@ -220,6 +301,28 @@ The pipeline calls every script via `singularity exec <container> python3 <scrip
   host-side `export SINGULARITYENV_<VAR>="<addition>:$SINGULARITYENV_<VAR>"` line before the `singularity
   exec` call, rather than `--env`, since `--env VAR=...` replaces rather than composes with the site's
   value (confirmed empirically: it silently drops Cray's MPI/fabric library paths).
+
+**Every one of the `CONTAINER_ENV` fixes above is compensating for a stale container build, not an
+inherent container limitation — confirmed live (2026-09-17).** `containers/spack-idia-fixed.def`'s
+`%post` section (last updated 2026-08-22) already bakes in a source-built `mpi4py`, `casampi==0.6.0`, an
+`OMPI_COMM_WORLD_RANK` shim (`91-ompi-rank-shim.sh`, more robust than the pipeline's own — it also falls
+back to `SLURM_PROCID`), and an OpenSSL `LD_PRELOAD` shim (`91-openssl-preload.sh`, discovering the spack
+hash dynamically rather than hardcoding it) as part of the container's own baked-in environment. But the
+*deployed* `idianext.sif` (built 2026-05-24, three months *before* that def-file update) has none of
+this: confirmed live that it has no `mpi4py` installed at all, `casampi` is still the buggy `0.5.9` (not
+`0.6.0`), and neither `91-*.sh` script exists in its `/.singularity.d/env/`. The def file describes a
+fixed recipe that was apparently never actually built into the image people are running — every
+`CONTAINER_ENV`/`_IDIANEXT_MPI4PY_DIR`/`_IDIANEXT_OPENSSL_LIB` workaround in `processMeerKAT.py` exists
+to paper over that gap, not because the container is fundamentally incapable of this. **Once `idianext.sif`
+is rebuilt from the current def file** (a support-request-worthy ask, not something fixable from this
+repo), `env['LD_PRELOAD']`, `env['OMPI_COMM_WORLD_RANK']`, and the entire `_IDIANEXT_MPI4PY_DIR` external
+mpi4py override (plus its `PYTHONPATH` prefix) should all become removable — `binds=['/var/spool/slurmd']`
+(the def file's own `%help` explains why this specifically can *never* be baked in: it's a per-job
+directory that doesn't exist until the Slurm job starts) and `PYTHONPATH`'s `SCRIPT_DIR` entry (inherently
+pipeline-specific, not a container concern) are the only pieces of this table with no container-side fix
+possible. `prepend_env['LD_LIBRARY_PATH']` for `/opt/casacore/lib` is a separate, still-open gap the
+current def file doesn't address at all — worth including in the same support request as an addition,
+not just a rebuild.
 
 `selfcal_part1.py` is currently the only script using `#SBATCH --exclusive` (needs the whole node's
 memory for large wide-field images); Setonix's real (non-`--test-only`) admission control for exclusive

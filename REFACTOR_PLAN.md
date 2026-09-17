@@ -613,10 +613,110 @@ session's own rollout), and the generated sbatch's resource sizing is an unprofi
 such in the tool's own log output) — never guess a number in, same rule as every other phase in this
 document.
 
-**Next step**: root-cause `hi_image`'s mid-computation hang (highest priority — blocks trusting any
-`niter`-heavy `hi_image` stage in production, and directly informs Phase 7b's design); then run Phase 10a
-for real once `P2`/`P3`/`P4` finish (profile `combine_tracks.sbatch`'s actual resource needs from that run).
-Phase 7's original walltime-strategy scope still open behind both.
+**Next step (superseded — see the "2026-09-11–17" update below)**: root-cause `hi_image`'s mid-computation
+hang (highest priority — blocks trusting any `niter`-heavy `hi_image` stage in production, and directly
+informs Phase 7b's design); then run Phase 10a for real once `P2`/`P3`/`P4` finish (profile
+`combine_tracks.sbatch`'s actual resource needs from that run). Phase 7's original walltime-strategy scope
+still open behind both.
+
+**Done (2026-09-11–17): Phase 10a run for real against `N4064`'s 4 tracks — full `write_combine_jobs()`
+DAG-generation extension, a real `virtualconcat` bug, and two distinct new `hi_image` failure modes found
+and fixed (neither is `P1_test`'s original silent stall, which remains open).** Full blow-by-blow in
+`profiling_notes.md`'s "N4064 — 4-track combine" section; summarized here.
+
+*`--combine` extended from "just write `combine_tracks.sbatch`" to a full DAG generator*: new
+`write_combine_jobs()` reuses `write_sbatch()` (incl. `slurm_config_registry`'s per-mode resource
+overrides) and `write_master()` (incl. `expand_hi_combo_scripts()`'s per-stage/per-combo replication and
+the summary/killJobs/etc. helper scripts) to build a real `submit_pipeline.sh` chaining `combine_tracks.py`
+→ `hi_image.py`/`hi_sofia.py`, the same machinery `-R` uses for a single track. Found and fixed two real
+bugs in `combine_tracks.write_combined_config()` doing this: `[data] vis`/`[run] hi_contsub_vis` were
+`os.path.join`'d with the output directory, but every consuming script runs with cwd already at that
+directory (doubles up); and neither `hi_image.py`'s actual accessor (`[run] hi_contsub_vis`, not
+`[data] vis`) nor the minimal `[crosscal] spw`/`nspw` stub `bookkeeping.run_script()` unconditionally
+needs were being written at all.
+
+*`virtualconcat`'s own `keepcopy=True` is broken for any `vis` path containing `/`* — found live when it
+crashed 15s into the real combine job, having already `shutil.move()`'d P1's real 459GB `.contsub` output
+into a temp staging dir first (recovered; not lost). Root cause confirmed by reading the container's own
+`task_virtualconcat.py`: its backup dance moves to `tempdir/<basename>` but restores via a bare string
+concat of the *full* original path, not the basename — only correct when every `vis` entry is already a
+bare filename in `cwd`. Fixed in `combine_tracks.py` by making disposable local copies first and calling
+`virtualconcat(..., keepcopy=False)` instead, sidestepping the broken code path entirely.
+
+*`hi_image` stage0 (mask pass, `niter=50000`, unmasked) timed out at 24h — genuine noise-chasing, not a
+hang*: confirmed still actively iterating throughout, but by the end every channel batch logged
+`Possible divergence`, and the cube's residual rms was already at/below the configured threshold — the
+textbook symptom of blindly cleaning a mostly-empty-of-real-signal cube toward a threshold near the noise
+floor. Fixed by dropping stage0's `niter` to 5000 (both the pipeline default and the live run), kept
+deliberately unmasked/blind rather than switching to `auto-multithresh`.
+
+*`image_engine.run_stage()` was unconditionally recomputing the PSF on every call, even a resume* — the
+w-projection convolution-function step alone took ~36min, wasted on every manual resume since it's
+independent of `niter`/deconvolution progress. Fixed via `calcpsf=False` reuse when `.psf`/`.sumwt`
+already exist. Later extended to `calcres`/`mask` too (see below) once resuming *mid-deep-clean* became
+the actual need.
+
+*`hi_image` stage1 (deep clean, `niter=1,500,000`, `mask='prev'`) timed out at 24h — root cause was zero
+minor-cycle iterations with no stopping criterion, a third distinct failure mode*: every one of 9,102
+`SDAlgorithmBase::deconvolve` log lines read `iters=0->0 ... Reached cyclethreshold` — not slow, doing
+*nothing*. Cause: `hi_sofia`'s masking pass (on stage0's now-shallower niter=5000 output) found only 3
+sources in the whole cube, so the residual inside that sparse mask was trivially already below threshold
+on every attempt — but `niter=1,500,000`/`nmajor=-1` gave `tclean` no stopping criterion tied to "no
+progress," so it just kept re-gridding the full 51M-row dataset forever for zero benefit until walltime
+killed it. **Deliberately not conflated with `P1_test`'s original silent-8h-stall hang** (still open,
+still unexplained) — this one logged normally on every attempt, it just accomplished nothing; a
+genuinely different symptom pointing at a genuinely different cause (mask sparsity + no `nmajor` cap, not
+an MPI/casampi coordination stall).
+
+*Root cause of the sparse mask: SoFiA's `scfind.kernelsZ`/`linker.radiusZ`/`linker.minSizeZ` are
+channel-unit, mismatched 4x for this mode* — `default_hi_sofmask.txt`'s shipped values assume
+~5.6km/s/channel; `32K_NE107M`+`chanbin=2` (this pipeline's own default for that mode) gives
+~1.4km/s/channel instead, exactly 4x finer. Confirmed via a standalone SoFiA test (not through the
+pipeline) against the real combined-track cube: unscaled defaults found 3 sources, the 4x-scaled values
+found 18, including the known target at its correct catalogued position. Fixed as a new
+`correlator_modes.py` mode-aware default (`sofia_kernelsZ`/`sofia_linker_radiusZ`/`sofia_linker_minSizeZ`
+on the `32K_NE107M` entry), applied by `read_ms.py` at `-B` time to both SoFiA passes — same pattern as
+`chanbin`/`nspw`/`imspw`. Only fires on a real `-B` run, not `combine_tracks.py`'s own config
+template-copy, so the live `N4064` run needed the override applied by hand too.
+
+*Extended the PSF-reuse mechanism to `.residual`/`.model`/`.mask` for a genuine mid-deep-clean resume*:
+after fixing the mask and resubmitting stage1, it again hit 24h without finishing — but this time with
+*real* convergence happening (confirmed: non-trivial per-channel iteration counts, model flux
+accumulating, `peakres` correctly converging to threshold, zero divergence). Rather than resetting
+(losing that real progress), added `calcres=False` reuse (mirrors `calcpsf`) plus a `mask=''` fix found
+on the first resume attempt (`tclean` refuses a fresh `mask=` once `.mask` already exists — "reset mask=''
+to reuse the existing mask, or delete `<imagename>.mask`") and a new `[hi_image] nmajor` cap (default -1;
+set to 15 for this resume) as a safety net against the "converged but keeps re-gridding forever" pattern
+just diagnosed. **Resumed run completed successfully in 21h05m, converging naturally in 6 major cycles**
+(well under the 15 cap — not an artificial cutoff), and `hi_sofia`'s final pass produced a real 2-source
+catalog (both sources independently confirmed against the earlier 18-detection test, including the known
+target at its correct position). Full HI cube imaging chain for a real 4-track combine now runs
+end-to-end.
+
+*Also fixed while inspecting the final output*: `hi_sofia.py`/`cont_sofia.py`'s final pass was writing its
+own outputs (mask/catalog/moments/cubelets/noise/plots) directly into the combo directory rather than
+`<combo_dir>/fincubes/` alongside the science cube they were derived from — both scripts reused one
+`output_dir` value for both the param file's own location (needs to stay in `combo_dir`) and SoFiA's
+`output.directory` (should track the final export instead). Fixed for both HI and continuum imaging.
+
+*Container finding, not yet actionable from this repo*: while reducing `processMeerKAT.py`'s container
+environment-variable workarounds, confirmed live that `idianext.sif` (built 2026-05-24) predates
+`containers/spack-idia-fixed.def`'s current `%post` fixes (last updated 2026-08-22) — the deployed
+container has no `mpi4py`, `casampi` is still the buggy `0.5.9` (not `0.6.0`), and neither of the def
+file's own `91-ompi-rank-shim.sh`/`91-openssl-preload.sh` environment scripts exist in it. Every
+`CONTAINER_ENV` workaround in `processMeerKAT.py` for OpenSSL/`OMPI_COMM_WORLD_RANK`/mpi4py exists to
+compensate for this gap, not because the container is inherently incapable — see CLAUDE.md's container
+section for the full breakdown of what becomes removable once `idianext.sif` is rebuilt from the current
+def file. A support request to get this rebuilt is the next action, not a code change.
+
+**Next step**: `P1_test`'s original silent-8h-mid-cycle stall (still genuinely unexplained — see its own
+section above) remains the highest-priority open question for trusting `hi_image` unattended at scale;
+this session's fixes closed three *other* real failure modes but didn't reproduce or explain that one.
+Phase 7's original walltime-strategy scope (7a/7b) is still open behind it. Separately: raise the
+container-rebuild request above: once `idianext.sif` reflects the current def file, come back and strip
+`CONTAINER_ENV`'s `LD_PRELOAD`/`OMPI_COMM_WORLD_RANK` and the whole `_IDIANEXT_MPI4PY_DIR` override from
+`processMeerKAT.py`, verified via a real MPI-parallel job (e.g. `hi_image.py`) before trusting it in
+production.
 
 ---
 
