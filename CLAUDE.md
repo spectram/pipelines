@@ -320,9 +320,13 @@ mpi4py override (plus its `PYTHONPATH` prefix) should all become removable — `
 (the def file's own `%help` explains why this specifically can *never* be baked in: it's a per-job
 directory that doesn't exist until the Slurm job starts) and `PYTHONPATH`'s `SCRIPT_DIR` entry (inherently
 pipeline-specific, not a container concern) are the only pieces of this table with no container-side fix
-possible. `prepend_env['LD_LIBRARY_PATH']` for `/opt/casacore/lib` is a separate, still-open gap the
-current def file doesn't address at all — worth including in the same support request as an addition,
-not just a rebuild.
+possible. `prepend_env['LD_LIBRARY_PATH']` for `/opt/casacore/lib` **now has a matching container-side
+fix too** (added 2026-09-17, ahead of the rebuild request specifically so it gets tested in the same pass
+as the others): a third env-shim script, `92-casacore-libpath.sh`, mirroring the OpenSSL fix's own
+dynamic-discovery pattern (`spack location -i casacore` + `find` for the actual `.so`, not a hardcoded
+`lib`/`lib64` guess) — **not yet verified against a real build** (no ability to build/run the container
+from here), so don't drop the pipeline's own `prepend_env` for this until a rebuilt image is confirmed to
+have it working.
 
 `selfcal_part1.py` is currently the only script using `#SBATCH --exclusive` (needs the whole node's
 memory for large wide-field images); Setonix's real (non-`--test-only`) admission control for exclusive
