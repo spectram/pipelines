@@ -51,11 +51,21 @@ def main(args, taskvals):
     else:
         input_fits = imagename + '.fits'
 
-    #output.directory + output.filename together determine where SoFiA writes the mask --
+    #output.directory + output.filename together determine where SoFiA writes its outputs --
     #directory handles the 'hi_combo<N>/' prefix, filename is the basename only (matching
     #image_stages.resolve_mask()'s '<imagename_fn(stage)>_mask.fits' expectation, which
-    #already includes that same prefix).
+    #already includes that same prefix). The masking pass's mask.fits must stay directly in
+    #'combo_dir' -- resolve_mask() hard-codes that exact path for the *next* stage's own
+    #mask='prev' lookup -- but the final pass's outputs (mask/catalog/moments/cubelets/
+    #noise/plots) belong alongside the science cube they were derived from
+    #(hi_image.py's own 'fincubes/<...>.image_rebin.im.fits' export), not scattered directly
+    #in 'combo_dir' -- confirmed live (2026-09-17) they were only landing there because this
+    #one value was previously reused, unconditionally, for both run_dir (the copied/patched
+    #param file's own location, which does stay in 'combo_dir' for both passes) and SoFiA's
+    #own output.directory.
     output_dir = combo_dir
+    sofia_output_dir = os.path.join(combo_dir, 'fincubes') if final else combo_dir
+    os.makedirs(sofia_output_dir, exist_ok=True)
     mask_basename = 'stage{0}'.format(stage)
     #SoFiA parameter overrides distinguishing this pass from the other (S+C kernels,
     #reliability threshold, which output products get written) -- see default_config.txt's
@@ -76,7 +86,7 @@ def main(args, taskvals):
             overrides['input.gain'] = pb_fits
     else:
         overrides = taskvals['hi_image'].get('sofia_mask_params', {})
-    sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, output_dir, mask_basename, overrides=overrides)
+    sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, sofia_output_dir, mask_basename, overrides=overrides)
 
     if final:
         combo += 1

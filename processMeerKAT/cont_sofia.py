@@ -45,7 +45,15 @@ def main(args, taskvals):
     else:
         input_fits = imagename + '.fits'
 
+    #The masking pass's mask.fits must stay directly in 'combo_dir' -- resolve_mask() hard-
+    #codes that exact path for the *next* stage's own mask='prev' lookup -- but the final
+    #pass's outputs (mask/catalog/moments/cubelets/noise/plots) belong alongside the science
+    #cube they were derived from (science_image.py's own 'fincubes/<...>.image_rebin.im.fits'
+    #export -- see its own 'export_dir'), not scattered directly in 'combo_dir' -- same fix as
+    #hi_sofia.py's identical issue (confirmed live, 2026-09-17).
     output_dir = combo_dir
+    sofia_output_dir = os.path.join(combo_dir, 'fincubes') if final else combo_dir
+    os.makedirs(sofia_output_dir, exist_ok=True)
     mask_basename = 'stage{0}'.format(stage)
     #SoFiA parameter overrides distinguishing this pass from the other (S+C kernels,
     #reliability threshold, which output products get written) -- see default_config.txt's
@@ -55,7 +63,7 @@ def main(args, taskvals):
         overrides = taskvals['cont_image'].get('sofia_final_params', {})
     else:
         overrides = taskvals['cont_image'].get('sofia_mask_params', {})
-    sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, output_dir, mask_basename, overrides=overrides)
+    sofia_engine.run_pass(processMeerKAT.SCRIPT_DIR, output_dir, final, input_fits, sofia_output_dir, mask_basename, overrides=overrides)
 
     stage = 0 if final else stage + 1
     config_parser.overwrite_config(args['config'], conf_dict={'stage': stage}, conf_sec='cont_image', sec_comment='# Internal variables for pipeline execution')
