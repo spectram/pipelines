@@ -151,6 +151,35 @@ export LD_PRELOAD="${OPENSSL_PREFIX}/lib64/libcrypto.so.3:${OPENSSL_PREFIX}/lib6
 EOF
 	chmod 755 $SSL_ENV
 
+	# --- Fix: python-casacore's compiled extension (casacore.images, used by e.g. PyBDSF's
+	# CASA-format mask export) is linked against this image's own casacore C++ library
+	# (libcasa_python3.so.8/libcasa_images.so.8/libcasa_casa.so.8), which isn't on the
+	# dynamic linker's default search path at runtime -- `import casacore.images` fails with
+	# a bare "cannot open shared object file" unless something puts casacore's own lib
+	# directory on LD_LIBRARY_PATH first.
+	#
+	# Discovered dynamically (find the actual .so, not an assumed lib/lib64 subdirectory) so
+	# this doesn't depend on guessing this spack package's exact layout, same reasoning as
+	# the OpenSSL fix above. Unlike that fix, this APPENDS rather than replaces
+	# LD_LIBRARY_PATH -- some sites' own singularity setup (e.g. Pawsey's "mpi"-flavoured
+	# module) sets a long SINGULARITYENV_LD_LIBRARY_PATH of its own (Cray MPI/fabric
+	# library paths) that composing must preserve, not clobber (confirmed elsewhere in this
+	# pipeline's own container-invocation code that a bare replacement silently drops those).
+	#
+	# NOTE: added ahead of an actual container rebuild/test (2026-09-17) -- verify
+	# `spack location -i casacore` resolves correctly and the `find` below actually locates
+	# the three `.so` files against a real build of this recipe before relying on this in
+	# production; if `casacore` isn't the right spack spec name in this environment, this
+	# block will need adjusting (e.g. to whatever package actually owns those libraries).
+	CASACORE_PREFIX=$(spack location -i casacore)
+	CASACORE_LIBDIR=$(dirname "$(find "$CASACORE_PREFIX" -name 'libcasa_casa.so*' | head -1)")
+	CASACORE_ENV=/.singularity.d/env/92-casacore-libpath.sh
+	cat >$CASACORE_ENV <<EOF
+#!/bin/sh
+export LD_LIBRARY_PATH="${CASACORE_LIBDIR}:\$LD_LIBRARY_PATH"
+EOF
+	chmod 755 $CASACORE_ENV
+
 	# Fix matplotlib issue
         python -m pip uninstall matplotlib -y
         python -m pip install matplotlib
