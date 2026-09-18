@@ -43,7 +43,7 @@ def main(args, taskvals):
         sys.exit(1)
 
     try:
-        #'stages'/'hi_combos'/'imsize'/'scales' are lists -- config_parser.validate_args()
+        #'stages'/'hi_combos'/'imsize'/'scales'/'cell' can be lists -- config_parser.validate_args()
         #only supports str/int/float/bool, so read these directly (matching
         #bookkeeping.get_selfcal_params()'s equivalent direct '[selfcal] stages' read).
         stages = image_stages.parse_stages(taskvals['hi_image']['stages'])
@@ -66,7 +66,21 @@ def main(args, taskvals):
     uvtaper = hi_combos[combo]['uvtaper']
 
     imsize = taskvals['hi_image']['imsize']
-    cell = va(taskvals, 'hi_image', 'cell', str)
+
+    #'cell' is either one string shared by every 'hi_combos' entry (unchanged, the common
+    #single-weighting case), or a list with one entry per 'hi_combos' entry -- different
+    #robust/uvtaper weightings change the synthesized beam, so a single cell size doesn't
+    #suit every combo once more than one is configured (e.g. a robust=-0.5+uvtaper=0
+    #combo's much finer beam needs a smaller cell than a robust=2.0 combo's -- confirmed
+    #needed live, 2026-09-18, running multiple hi_combos side by side). Indexed positionally
+    #by 'combo', same convention as 'hi_combos' itself.
+    cell = taskvals['hi_image']['cell']
+    if isinstance(cell, list):
+        if len(cell) != len(hi_combos):
+            logger.error("'[hi_image] cell' has {0} entries but 'hi_combos' has {1} -- must match one-to-one when 'cell' is a list (or use a single string to share one cell size across every combo).".format(len(cell), len(hi_combos)))
+            sys.exit(1)
+        cell = cell[combo]
+
     scales = taskvals['hi_image']['scales']
     gridder = va(taskvals, 'hi_image', 'gridder', str)
     wprojplanes = va(taskvals, 'hi_image', 'wprojplanes', int)

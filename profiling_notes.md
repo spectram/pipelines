@@ -554,3 +554,73 @@ SoFiA pass (2 robust detections). `P1_test`'s original silent-8h-mid-cycle stall
 section above) was never reproduced or explained by any of this -- it remains open, and none
 of these three fixes (niter, PSF/residual/mask reuse, nmajor cap) should be assumed to cover
 that specific failure mode too until it's actually seen again and checked against them.
+
+## N4064 — `--combine`'s `[hi_image]` derivation fixed; `hi_combos`-per-weighting `cell`; a `tclean` channel-padding gap found
+
+**`--combine -H`'s `imspw` was silently inherited from whichever track `discover_tracks()`
+happened to sort first**, found while answering "how was `imspw` defined for `M2`?":
+`write_combined_config()` copied `[hi_image]` (the whole section, `imspw` included) wholesale
+from `tracks[0]/myconfig.txt`. `tracks[0]` was `P1` here purely because of sort order — `P2`/
+`P3`/`P4` had no `[hi_image]` section at all (never built with `-B -H`), so if `P1` hadn't
+happened to sort first, the combine would have hard-failed outright. Even when a template
+track does have `[hi_image]`, its `imspw` only ever reflected that one track's own `-F`/MS
+assumptions at its own `-B` time — never independently verified against the actual combined
+data. Fixed by seeding `[hi_image]` from `default_config.txt`'s own template (same as a real
+`-B` build) and deriving `imspw`/SoFiA-kernel overrides fresh: `[run] correlator_mode`
+cross-checked across every combined track's own recorded value (raises if they disagree), then
+a new `combine_hi_defaults.py` (a short-lived CASA call, invoked synchronously from
+`run_combine()` the same ad hoc way `read_ms.py`'s own `-B` field extraction is) derives centre
+frequency from a real per-track source MS via `msmd` when `-F` isn't given, and computes
+`imspw`/SoFiA overrides via a new shared `correlator_modes.compute_imspw()` (factored out of
+`read_ms.py`'s own `-B -H` block).
+
+Two real bugs found building this, both live-confirmed: (1) `combine_hi_defaults.py` calls
+`processMeerKAT.parse_args()` for its flag vocabulary, whose run-mode group
+(`-B`/`-R`/`--combine`/`-V`/`-L`) is `required=True` even though `combine_hi_defaults.py`'s own
+`main()` never checks `args.build` — omitting a bare `-B` in its invocation params failed
+`parse_args()` itself before any of the script's own code ran, same reason `read_ms.py`'s own
+`-B` invocation always includes one. (2) The first version tried to re-identify the correlator
+mode from `source_vis[0]`'s own `ChanWid` (mirroring `read_ms.py`'s real `-B -H` logic) — this
+silently failed ("mode not recognized", falling back to a generic ±5MHz `imspw`), because
+`source_vis` is each track's `.contsub` output, already through `[crosscal] chanbin=2`
+averaging by `partition.py` — its `ChanWid` was 6.531kHz, not the 3.265kHz `identify_mode()`'s
+table expects (exactly the 2x already baked in). Fixed by reading the cross-checked mode name
+back from config instead of re-deriving it from that MS's spectral facts — CtrFreq is
+unaffected by mere channel averaging so that part of the msmd read stayed valid, only the
+ChanWid-based mode ID needed removing. Verified live end-to-end: `processMeerKAT.py --combine .
+-H -F 1415.75 -A pawsey1164` against `N4064` correctly produced `imspw='*:1412.75~1418.75MHz'`
+(centred on the given `-F`, ±3MHz per `32K_NE107M`'s `imspw_mhz=6`), `correlator_mode=
+'32K_NE107M'` (cross-checked across all 4 tracks), and the 4x-scaled SoFiA kernel/linker
+overrides — all derived, none copied. Didn't touch the already-completed `M2` run's actual
+image/SoFiA products, only regenerated `myconfig.txt`/the sbatch chain (backed up the prior
+config first) — `hi_combo0`'s existing `stage0`/`stage1` outputs would need clearing before a
+resubmit could actually pick up the new centring, same idempotency-driven "clear stale output
+to force a redo" convention as everywhere else in this pipeline.
+
+**`[hi_image] cell` can now be a list, one entry per `hi_combos` entry** — requested for running
+several `robust`/`uvtaper` weightings side by side (hand-editing `M2/myconfig.txt` to add more
+`hi_combos` entries), where a single shared cell size doesn't suit every combo's differently-
+sized synthesized beam. `hi_image.py` reads `cell` directly now (list/str, not through
+`config_parser.validate_args()`) and indexes it by `combo` when it's a list; a plain string
+still works unchanged, shared across every combo.
+
+**Found, not yet fixed: HI cubes can have empty channels beyond the requested `imspw`
+window.** Noticed on `M2/hi_combo0_test1` (a manual test cube, not the production `hi_combo0`
+run): `stage1.image` came out **1263 channels** (6.530kHz each, matching `chanbin=2`), spanning
+**1409.161–1417.403MHz** — visibly wider than any `imspw` window ever configured for it (the
+production run's original was a 6MHz window centred at 1414.5037MHz). The excess wasn't
+symmetric padding: the cube's high edge landed almost exactly on the window's requested top
+edge (off by ~15 channels), while the low edge sat roughly 2.3MHz (~345–360 channels) below the
+window's bottom — essentially all the overshoot on one side. Root cause, confirmed by reading
+`image_engine.run_stage()`'s actual `tclean()` kwargs: `spw=imspw` (a frequency-range
+*selection* string) is passed, but `nchan`/`start`/`width` are never set, staying at CASA's own
+defaults. Combined with `specmode='cube'` + `outframe='bary'`/`veltype='optical'` (confirmed via
+`msmd.chanfreqs()` that this MS's own channels are natively in a different, non-BARY frame),
+CASA's automatic channelization doesn't tightly clip to `spw=`'s MHz bounds — it derives the
+output grid from the selected visibilities' own native channelization, then reprojects into the
+requested `outframe` once, which isn't guaranteed to land flush with the requested window. This
+is a known, documented CASA gotcha for spectral-line cube imaging generally (NRAO's own
+guidance: always pass `start`/`width`/`nchan` explicitly rather than relying on `spw=` selection
++ frame conversion defaults). Not fixed — diagnosis only, at the user's explicit direction; the
+fix would be computing `start`/`width`/`nchan` from `imspw`'s bounds and the mode's real channel
+width and threading them through `image_engine.run_stage()`'s `tclean()` call.

@@ -709,14 +709,49 @@ compensate for this gap, not because the container is inherently incapable — s
 section for the full breakdown of what becomes removable once `idianext.sif` is rebuilt from the current
 def file. A support request to get this rebuilt is the next action, not a code change.
 
-**Next step**: `P1_test`'s original silent-8h-mid-cycle stall (still genuinely unexplained — see its own
-section above) remains the highest-priority open question for trusting `hi_image` unattended at scale;
-this session's fixes closed three *other* real failure modes but didn't reproduce or explain that one.
-Phase 7's original walltime-strategy scope (7a/7b) is still open behind it. Separately: raise the
-container-rebuild request above: once `idianext.sif` reflects the current def file, come back and strip
-`CONTAINER_ENV`'s `LD_PRELOAD`/`OMPI_COMM_WORLD_RANK` and the whole `_IDIANEXT_MPI4PY_DIR` override from
-`processMeerKAT.py`, verified via a real MPI-parallel job (e.g. `hi_image.py`) before trusting it in
-production.
+**Next step (superseded — see the "2026-09-18" update below)**: `P1_test`'s original silent-8h-mid-cycle
+stall (still genuinely unexplained — see its own section above) remains the highest-priority open question
+for trusting `hi_image` unattended at scale; this session's fixes closed three *other* real failure modes
+but didn't reproduce or explain that one. Phase 7's original walltime-strategy scope (7a/7b) is still open
+behind it. Separately: raise the container-rebuild request above: once `idianext.sif` reflects the current
+def file, come back and strip `CONTAINER_ENV`'s `LD_PRELOAD`/`OMPI_COMM_WORLD_RANK` and the whole
+`_IDIANEXT_MPI4PY_DIR` override from `processMeerKAT.py`, verified via a real MPI-parallel job (e.g.
+`hi_image.py`) before trusting it in production.
+
+**Done (2026-09-18): `--combine -H`'s `[hi_image]` derivation fixed (real defaults, not a copied track
+config); `[hi_image] cell` can now vary per `hi_combos` entry; found (not yet fixed) a `tclean` gap that
+can leave empty channels beyond the requested `imspw` window.** Full detail in `CLAUDE.md`'s "Multi-track
+combining" and "HI/continuum cube imaging" sections; summarized here.
+
+*`write_combined_config()` was copying `[hi_image]` (including `imspw`) wholesale from `tracks[0]`'s own
+myconfig.txt* — found broken in exactly the way you'd expect from an index-0 dependency: three of N4064's
+four tracks had no `[hi_image]` section at all (never built with `-B -H`), and the one track that did only
+ever reflected its own `-F`/MS assumptions, never verified against the actual combined data. Fixed:
+`[hi_image]` now seeds from `default_config.txt`'s own template (same as a real `-B` build), and a new
+`combine_hi_defaults.py` (invoked synchronously from `run_combine()`, mirroring `read_ms.py`'s own ad hoc
+`-B` `srun` call) fills `imspw`/SoFiA-kernel overrides back in from real facts — `correlator_mode` cross-
+checked across every combined track's own recorded value (not re-derived from the already-`chanbin`'d
+`.contsub` MS, which was tried first and silently misidentified the mode), centre frequency from a real
+per-track MS via `msmd` when `-F` isn't given. `correlator_modes.compute_imspw()` factors the shared logic
+out of `read_ms.py`'s own `-B -H` block so both call sites use it. Caught two real bugs building this:
+`combine_hi_defaults.py` needs a bare `-B` in its own invocation just to satisfy `parse_args()`'s
+mutually-exclusive required group (never checked by its own `main()`), and the first version tried to
+re-identify the correlator mode from `source_vis`'s `ChanWid`, which no longer matches — `.contsub` output
+is already post-`chanbin`.
+
+*`[hi_image] cell` can now be a list, one entry per `hi_combos` entry* — requested for running several
+weighting combinations (different `robust`/`uvtaper`) side by side, where a single shared cell size no
+longer suits every combo's differently-sized synthesized beam. Backward compatible: a plain string still
+works, shared across every combo as before.
+
+*Found, not yet fixed: HI cubes can have empty channels beyond the requested `imspw` window* — a real
+`stage1.image` came out 1263 channels wide, spanning ~8.2MHz, when every `imspw` window configured for it
+was 5–6MHz — and the excess wasn't symmetric padding, it was almost entirely on one edge. Root cause:
+`image_engine.run_stage()`'s `tclean()` call passes `spw=imspw` but never sets `nchan`/`start`/`width`,
+and with `specmode='cube'` + `outframe='bary'` (frame conversion, confirmed via `msmd.chanfreqs()` vs the
+BARY-frame `imspw` numbers), CASA's own default channelization doesn't tightly clip to `spw=`'s MHz
+bounds. Standard fix is computing `start`/`width`/`nchan` explicitly from `imspw` and the mode's channel
+width — not implemented, since it wasn't the ask this session (diagnosis only, at the user's direction).
 
 ---
 

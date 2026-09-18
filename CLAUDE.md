@@ -207,6 +207,27 @@ since `bookkeeping.run_script()` unconditionally validates those two keys regard
 `os.path.join`'d with the output directory) — every script that reads them runs with cwd already at that
 output directory, and embedding the directory a second time silently doubles it up.
 
+**`--combine -H`'s `[hi_image]` section is built from real derived defaults, never copied from a track.**
+`write_combined_config()` seeds `[hi_image]` from `default_config.txt`'s own shipped template — exactly
+what a fresh `-B` build starts from — not from any one track's `myconfig.txt`. Confirmed live (2026-09-18,
+N4064's `M2`): the earlier design copied `[hi_image]` wholesale from `tracks[0]`, which broke two ways —
+`tracks[0]` isn't guaranteed to even have a `[hi_image]` section (three of N4064's four tracks were only
+ever built with plain `-B`, not `-B -H`), and even when it does, the copied `imspw` reflects only that one
+track's own `-F`/MS assumptions, never independently verified against the actual combined data.
+`run_combine()` (in `processMeerKAT.py`) fills `imspw`/SoFiA-kernel overrides back in right after, from two
+different kinds of real facts: `[run] correlator_mode` is *cross-checked* directly against every combined
+track's own already-recorded value (present unconditionally on every track, since `read_ms.py` writes it
+at every `-B` regardless of `-H` — raises if tracks disagree, rather than trusting one); then a short-lived
+CASA call (`combine_hi_defaults.py`, invoked synchronously the same ad hoc non-sbatch way `read_ms.py`'s
+own `-B` field extraction is) derives the centre frequency from one of the real per-track source MSs
+(only when `[-F --centralspw]` wasn't given) and computes `imspw`/SoFiA overrides via
+`correlator_modes.compute_imspw()` (also used by `read_ms.py`'s own `-B -H` block, factored out so both
+share it). **The mode itself is never re-identified from that source MS's own spectral facts** — it's
+already a `.contsub` output, through `[crosscal] chanbin` averaging by that point, so its `ChanWid` no
+longer matches `identify_mode()`'s native-channel-width table (confirmed live: 6.531kHz observed vs the
+3.265kHz `32K_NE107M` expects — exactly the 2x `chanbin=2` already baked in) — hence reading the
+cross-checked name back from config instead of re-deriving it from that MS.
+
 **`virtualconcat`'s own `keepcopy=True` is broken for any `vis` path containing a `/`** — confirmed live
 via a real `FileNotFoundError` mid-combine that briefly stranded a real 459GB per-track `.contsub` output
 (moved but not restored) before crashing. Its backup dance does `shutil.move(elvis, tempdir)` (lands at
@@ -251,6 +272,29 @@ there for the *next* stage's `mask='prev'` lookup) — but the *final* pass's ou
 (mask/catalog/moments/cubelets/noise/plots) go into `<combo_dir>/fincubes/`, alongside the rebinned,
 beam-collapsed, velocity-converted science cube (`image_engine.finalize_stage()`'s own export) they were
 derived from, not scattered into the combo directory directly.
+
+**`[hi_image] cell` can be a per-combo list, not just one shared string.** Different `robust`/`uvtaper`
+weightings in `hi_combos` change the synthesized beam, so a single cell size doesn't suit every combo once
+more than one is configured. `hi_image.py` reads `cell` directly (not via `config_parser.validate_args()`,
+str/int/float/bool only) and accepts either one string (unchanged, shared across every combo) or a list
+with one entry per `hi_combos` entry, indexed positionally by `combo` — errors out if the lengths don't
+match rather than silently misapplying the wrong cell size.
+
+**Known gap, not yet fixed: HI cubes can have empty channels beyond the requested `imspw` window.**
+Confirmed live (2026-09-18, N4064): a real `stage1.image` came out with 1263 channels (6.530kHz each,
+matching `chanbin=2`) spanning 1409.161–1417.403MHz — visibly wider than, and offset from, any `imspw`
+window this pipeline has configured, with essentially all of the extra (empty, no data gridded) channels
+on one edge, not padded symmetrically. Root cause: `image_engine.run_stage()`'s `tclean()` call passes
+`spw=imspw` (a frequency-range *selection* string) but never sets `nchan`/`start`/`width` — those stay at
+CASA's own defaults. Combined with `specmode='cube'` + `outframe='bary'`/`veltype='optical'` (this MS's
+own channels are natively in a different, non-BARY frame — confirmed via `msmd.chanfreqs()` vs the BARY-
+frame `imspw` numbers), CASA's automatic channelization does not tightly clip the output grid to `spw=`'s
+MHz bounds — it derives the grid from the selected visibilities' own native channelization, then
+reprojects into the requested `outframe` once, which isn't guaranteed to land flush with the requested
+window. Standard CASA guidance for spectral-line cube imaging is to always pass `start`/`width`/`nchan`
+explicitly rather than relying on `spw=` selection + frame-conversion defaults, for exactly this reason.
+Not yet fixed here — would need `start`/`width`/`nchan` computed from `imspw`'s bounds and the mode's real
+channel width and threaded through `image_engine.run_stage()`'s `tclean()` kwargs.
 
 ### SoFiA spectral kernel/linker parameters are channel-unit, and must match the mode's real channel width
 
