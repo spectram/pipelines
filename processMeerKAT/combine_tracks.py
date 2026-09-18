@@ -33,6 +33,7 @@ import ast
 
 import config_parser
 import bookkeeping
+import processMeerKAT
 
 import logging
 from time import gmtime
@@ -132,14 +133,31 @@ def resolve_track_vis(track_dir, hi_image, config_name='.config.tmp'):
 def write_combined_config(output_dir, tracks, source_vis, output_vis, hi_image, template_config=None):
 
     """Write a trimmed myconfig.txt in 'output_dir' for the combined MS -- [data]/[run]/
-    [combine]/[crosscal] always, plus a copy of [hi_image] and [run] correlator_mode (from
-    'template_config', typically one of the source tracks' own myconfig.txt) when 'hi_image'
-    is True. Deliberately omits [selfcal]/[contsub] and the per-track [crosscal] calibration
-    keys -- that work is already baked into the per-track inputs being combined, and
-    re-exposing those sections would misleadingly suggest they still need running here; only
-    a minimal [crosscal] spw/nspw stub is written, since every script run via
-    bookkeeping.run_script() (i.e. every script here except combine_tracks.py itself)
-    unconditionally validates those two keys even when no crosscal step is in its DAG.
+    [combine]/[crosscal] always, plus [hi_image] (from default_config.txt's own shipped
+    template, NOT copied from any track -- see below) and, when 'template_config' is given,
+    [run] correlator_mode, when 'hi_image' is True. Deliberately omits [selfcal]/[contsub] and
+    the per-track [crosscal] calibration keys -- that work is already baked into the per-track
+    inputs being combined, and re-exposing those sections would misleadingly suggest they
+    still need running here; only a minimal [crosscal] spw/nspw stub is written, since every
+    script run via bookkeeping.run_script() (i.e. every script here except combine_tracks.py
+    itself) unconditionally validates those two keys even when no crosscal step is in its DAG.
+
+    [hi_image] starts from default_config.txt's own template, exactly like a real '-B' build
+    would -- NOT copied from any one track's own myconfig.txt. Confirmed live (2026-09-18,
+    N4064's M2): copying wholesale from 'tracks[0]' meant M2 silently inherited P1's own
+    'imspw' (and every other [hi_image] value) verbatim, unrelated tracks (P2/P3/P4 here) may
+    never have been built with '-B -H' at all and have no [hi_image] section to copy from in
+    the first place, and even when a template track does have one, it reflects only that one
+    track's own '-F'/MS assumptions -- never independently verified against the actual
+    combined data. run_combine() fills 'imspw'/SoFiA-kernel overrides back in afterward:
+    '[run] correlator_mode' is cross-checked directly from every combined track's own
+    already-recorded value (present unconditionally on every track, unlike [hi_image] --
+    read_ms.py writes it at every '-B' regardless of '-H'), then a short-lived CASA call
+    (combine_hi_defaults.py) against one of the real per-track source MSs derives the centre
+    frequency (when '[-F --centralspw]' wasn't given) and computes 'imspw' from that mode +
+    centre frequency -- see combine_hi_defaults.py's own docstring for why re-identifying the
+    mode itself from that source MS's spectral facts doesn't work (it's already through
+    [crosscal] chanbin averaging by that point).
 
     [combine] records the resolved inputs (tracks + their absolute source_vis paths) so the
     actual combine_tracks.py compute job -- run inside a submitted sbatch, separately from this
@@ -160,18 +178,16 @@ def write_combined_config(output_dir, tracks, source_vis, output_vis, hi_image, 
     hi_image : bool
         Combining for HI imaging (True) or continuum imaging (False)?
     template_config : str, optional
-        Path to a config to copy [hi_image]/[run] correlator_mode from -- required when
-        hi_image=True (need somewhere to copy [hi_image] from); optional but recommended
-        otherwise (only used for [run] correlator_mode, which just falls back to unprofiled
-        default SLURM resources for every script if omitted).
+        Path to a config to copy [run] correlator_mode from (typically one of the source
+        tracks' own myconfig.txt) when hi_image=False -- purely a SLURM-resource-profile
+        lookup key (see slurm_config_registry.py), so falls back gracefully to unprofiled
+        default resources if omitted or missing. Ignored when hi_image=True, where
+        run_combine() cross-checks correlator_mode across every track instead (see above).
 
     Returns:
     --------
     output_config : str
         Path to the written config."""
-
-    if hi_image and not template_config:
-        raise ValueError("template_config is required when hi_image=True (need somewhere to copy [hi_image] from).")
 
     os.makedirs(output_dir, exist_ok=True)
     output_config = os.path.join(output_dir, 'myconfig.txt')
@@ -203,28 +219,36 @@ def write_combined_config(output_dir, tracks, source_vis, output_vis, hi_image, 
         sec_comment='# Internal variables for pipeline execution')
     config_parser.overwrite_config(output_config, conf_dict={'spw': "''", 'nspw': 1}, conf_sec='crosscal')
 
-    if template_config:
+    if hi_image:
+        #Real default, same source a fresh '-B' build itself copies from -- see
+        #processMeerKAT.default_config(). Not the per-track myconfig.txt copy this replaced
+        #(see this function's docstring); run_combine()'s combine_hi_defaults.py call
+        #overwrites 'imspw' (and, when the identified mode has them, the SoFiA kernel/linker
+        #overrides) with values freshly derived from real data right after this returns.
+        default_config_path = os.path.join(processMeerKAT.SCRIPT_DIR, processMeerKAT.CONFIG)
+        default_dict, _ = config_parser.parse_config(default_config_path)
+        hi_image_section = default_dict.get('hi_image', {})
+        if not hi_image_section:
+            raise ValueError("'{0}' has no [hi_image] section to default from.".format(default_config_path))
+        #overwrite_config() just str()s whatever it's given -- default_dict's values are
+        #already parsed (ast.literal_eval()'d) Python values, e.g. a plain unquoted string, so
+        #they need re-quoting via repr() to round-trip back through config parsing correctly
+        #(str() alone would write e.g. imspw's value as bare, unquoted text).
+        config_parser.overwrite_config(output_config, conf_dict={k: repr(v) for k, v in hi_image_section.items()}, conf_sec='hi_image')
+    elif template_config:
         template_dict, _ = config_parser.parse_config(template_config)
 
         #Correlator mode is a property of the raw input data (identified once by read_ms.py
         #at each track's own '-B' time), unaffected by combining -- carried forward so
         #slurm_config_registry's per-script resource overrides (e.g. hi_image's profiled
         #nodes/tasks for this mode -- see correlator_modes.py) still apply to the combined
-        #run, the same way they did for each individual track.
+        #run, the same way they did for each individual track. Only meaningful here
+        #(hi_image=False) -- the hi_image=True branch above skips this: run_combine() itself
+        #cross-checks correlator_mode across every combined track instead of trusting one.
         correlator_mode = template_dict.get('run', {}).get('correlator_mode', '')
         if correlator_mode:
             config_parser.overwrite_config(output_config, conf_dict={'correlator_mode': repr(correlator_mode)},
                 conf_sec='run', sec_comment='# Internal variables for pipeline execution')
-
-        if hi_image:
-            hi_image_section = template_dict.get('hi_image', {})
-            if not hi_image_section:
-                raise ValueError("'{0}' has no [hi_image] section to copy.".format(template_config))
-            #overwrite_config() just str()s whatever it's given -- template_dict's values are
-            #already parsed (ast.literal_eval()'d) Python values, e.g. a plain unquoted string, so
-            #they need re-quoting via repr() to round-trip back through config parsing correctly
-            #(str() alone would write e.g. imspw's value as bare, unquoted text).
-            config_parser.overwrite_config(output_config, conf_dict={k: repr(v) for k, v in hi_image_section.items()}, conf_sec='hi_image')
 
     return output_config
 

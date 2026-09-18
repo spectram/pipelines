@@ -1622,9 +1622,9 @@ def run_combine(wdir, hi_image, arg_dict):
 
     output_dir = os.path.join(wdir, 'M2')
     output_vis = '{0}_combined.mms'.format(os.path.basename(wdir))
-    #[hi_image]/[run] correlator_mode are copied from the first track's own myconfig.txt --
-    #every track in a combine set is expected to share the same [hi_image] settings and
-    #correlator mode (same target/instrument setup), only their per-track calibration differs.
+    #Only used for continuum combines ([run] correlator_mode copy-forward) -- an HI combine
+    #derives its [hi_image]/[run] correlator_mode fresh below instead, see
+    #combine_tracks.write_combined_config()'s docstring for why.
     template_config = os.path.join(tracks[0], 'myconfig.txt')
 
     output_config = combine_tracks.write_combined_config(
@@ -1634,6 +1634,60 @@ def run_combine(wdir, hi_image, arg_dict):
     cwd = os.getcwd()
     try:
         os.chdir(output_dir)
+
+        if hi_image:
+            #[run] correlator_mode: cross-checked from every track's own already-recorded value
+            #(written unconditionally by read_ms.py at each track's own '-B' time -- see
+            #correlator_modes.py's module docstring -- so it's present even on a track never
+            #built with '-H', unlike [hi_image]) rather than re-identified from source_vis[0]'s
+            #own spectral facts. Confirmed live (2026-09-18): source_vis (the '.contsub' output)
+            #has already had [crosscal] chanbin applied (partition.py runs before uvcontsub.py),
+            #so its ChanWid no longer matches identify_mode()'s native-channel-width table at
+            #all (6.531kHz observed vs the 3.265kHz '32K_NE107M' expects -- exactly the 2x
+            #chanbin=2 already baked in), silently falling back to "mode not recognized". Every
+            #track being combined is required to already share one mode (virtualconcat itself
+            #assumes matching channel structure across inputs), so this is a hardware-level
+            #fact, not a per-run choice like [hi_image]'s old template_config copy was -- still
+            #cross-checked, not blindly trusted from a single track, in case that assumption
+            #ever breaks.
+            track_modes = set()
+            for t in tracks:
+                track_cfg, _ = config_parser.parse_config(os.path.join(t, 'myconfig.txt'))
+                track_modes.add(track_cfg.get('run', {}).get('correlator_mode', ''))
+            if len(track_modes) > 1:
+                raise ValueError("Tracks under '{0}' report different correlator modes ({1}) -- refusing to combine mismatched-mode tracks.".format(wdir, sorted(track_modes)))
+            correlator_mode_name = track_modes.pop() if track_modes else ''
+            config_parser.overwrite_config('myconfig.txt', conf_dict={'correlator_mode': "'{0}'".format(correlator_mode_name)},
+                conf_sec='run', sec_comment='# Internal variables for pipeline execution')
+
+            #imspw/SoFiA-kernel overrides still need a live CASA call (combine_hi_defaults.py)
+            #-- not for mode identification (now read back from '[run] correlator_mode' above),
+            #but to get the real centre frequency from one of the actual per-track source MSs
+            #being combined when '[-F --centralspw]' isn't given. Same ad hoc non-sbatch 'srun'
+            #pattern as read_ms.py's own '-B' field extraction (mpi=False: not MPI-parallel, and
+            #outside an sbatch job's task allocation casampi's MPI_Init would otherwise hang --
+            #see write_command()'s 'mpi' argument docstring). Must run before
+            #write_combine_jobs() below, since that's what resolves slurm_config_registry's
+            #per-correlator-mode resource overrides.
+            if arg_dict['local']:
+                mpi_wrapper = ''
+            else:
+                mpi_wrapper = srun(arg_dict)
+            #combine_hi_defaults.py calls processMeerKAT.parse_args() (needs its full flag set,
+            #e.g. -F), whose run-mode group (-B/-R/--combine/-V/-L) is required=True even
+            #though combine_hi_defaults.py's own main() never checks args.build -- same reason
+            #read_ms.py's own '-B' invocation always includes a bare '-B' (confirmed live,
+            #2026-09-18: omitting this fails parse_args() itself with "one of the arguments
+            #-B/--build -R/--run --combine -V/--version -L/--license is required" before
+            #combine_hi_defaults.py's own code ever runs).
+            params = '-B -M {0} -C myconfig.txt'.format(source_vis[0])
+            if arg_dict['centralspw'] is not None:
+                params += ' -F {0}'.format(arg_dict['centralspw'])
+            command = write_command('combine_hi_defaults.py', params, mpi_wrapper=mpi_wrapper, container=arg_dict['container'], logfile=False, mpi=False)
+            logger.info('Deriving [hi_image] imspw/SoFiA defaults from "{0}" using CASA.'.format(source_vis[0]))
+            logger.debug('Using the following command:\n\t{0}'.format(command))
+            os.system(command)
+
         write_combine_jobs('myconfig.txt', hi_image, arg_dict)
     finally:
         os.chdir(cwd)

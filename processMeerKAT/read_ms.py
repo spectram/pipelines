@@ -469,20 +469,18 @@ def main():
     #[crosscal] spw to the MS's real bounds as a safety net, same as the pre-existing
     #[-F --centralspw] mechanism this replaces.
     if args.hi_image:
-        if mode is not None:
-            imspw_halfwidth = mode['imspw_mhz'] / 2.
-        else:
+        if mode is None:
             logger.warning("Falling back to nspw=1, unchanged chanbin, and a +-{0}MHz [hi_image] imspw band, since the correlator mode wasn't recognized.".format(correlator_modes.GENERAL_IMSPW_MHZ / 2.))
             config_parser.overwrite_config(args.config, conf_dict={'nspw': 1}, conf_sec='crosscal')
-            imspw_halfwidth = correlator_modes.GENERAL_IMSPW_MHZ / 2.
 
         low = round(centralfreq_mhz - 10, 4)
         high = round(centralfreq_mhz + 10, 4)
         config_parser.overwrite_config(args.config, conf_dict={'spw': "'*:{0}~{1}MHz'".format(low, high)}, conf_sec='crosscal')
 
-        imspw_low = round(centralfreq_mhz - imspw_halfwidth, 4)
-        imspw_high = round(centralfreq_mhz + imspw_halfwidth, 4)
-        config_parser.overwrite_config(args.config, conf_dict={'imspw': "'*:{0}~{1}MHz'".format(imspw_low, imspw_high)}, conf_sec='hi_image')
+        #imspw/SoFiA kernel-linker overrides -- shared with combine_tracks.py's own fresh
+        #per-combine derivation, see correlator_modes.compute_imspw()'s docstring.
+        imspw, sofia_overrides = correlator_modes.compute_imspw(mode, centralfreq_mhz)
+        config_parser.overwrite_config(args.config, conf_dict={'imspw': imspw}, conf_sec='hi_image')
 
         #SoFiA's spectral kernel/linker parameters (channel units) only match
         #default_hi_sofmask.txt's shipped defaults' intent when the mode's own chanbin gives
@@ -492,13 +490,11 @@ def main():
         #SoFiA passes; unconditional (like nspw/chanbin/imspw above), not merged with any
         #pre-existing sofia_mask_params/sofia_final_params dict value -- consistent with this
         #function's other mode-driven '-B'-time defaults.
-        if mode is not None and 'sofia_kernelsZ' in mode:
+        if sofia_overrides is not None:
             hi_image_cfg = config_parser.parse_config(args.config)[0].get('hi_image', {})
             for params_key in ('sofia_mask_params', 'sofia_final_params'):
                 params = dict(hi_image_cfg.get(params_key, {}))
-                params['scfind.kernelsZ'] = mode['sofia_kernelsZ']
-                params['linker.radiusZ'] = mode['sofia_linker_radiusZ']
-                params['linker.minSizeZ'] = mode['sofia_linker_minSizeZ']
+                params.update(sofia_overrides)
                 config_parser.overwrite_config(args.config, conf_dict={params_key: repr(params)}, conf_sec='hi_image')
             logger.info("Defaulting SoFiA scfind.kernelsZ={0}, linker.radiusZ={1}, linker.minSizeZ={2} for correlator mode '{3}' (chanbin={4}).".format(
                 mode['sofia_kernelsZ'], mode['sofia_linker_radiusZ'], mode['sofia_linker_minSizeZ'], mode['name'], mode['chanbin']))

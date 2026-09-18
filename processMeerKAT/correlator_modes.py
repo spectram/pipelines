@@ -177,6 +177,57 @@ def identify_mode(chanwid_khz):
     return None
 
 
+def compute_imspw(mode, centralfreq_mhz):
+
+    """Compute the `[hi_image] imspw` band and matching SoFiA kernel/linker overrides for a
+    given identified `mode` (or None) and centre frequency -- the mode-driven-default logic
+    itself, factored out so it's shared between `read_ms.py`'s '-B -H' flow (real MS access,
+    mode identified fresh from that MS's own spectral facts) and `combine_tracks.py`'s
+    '--combine' flow (mode identified fresh from one of the real per-track source MSs being
+    combined, e.g. the '.contsub' output -- never copied from another track's already-written
+    config, which could be stale, wrong, or simply not exist if that track was never itself
+    built with '-H'; confirmed live, 2026-09-18, N4064's M2 combine had silently inherited
+    P1's `imspw` verbatim while P2/P3/P4 had no `[hi_image]` section at all to fall back on).
+
+    Arguments:
+    ----------
+    mode : dict or None
+        An `identify_mode()` result (or None if unrecognized -- falls back to
+        `GENERAL_IMSPW_MHZ`).
+    centralfreq_mhz : float
+        Centre frequency (MHz) to centre the imspw band on -- user `[-F --centralspw]` if
+        given, else the MS's own centre frequency (`get_spw_summary()`'s `ctrfreq_mhz`).
+
+    Returns:
+    --------
+    imspw : str
+        Config-ready `[hi_image] imspw` value, e.g. "'*:1411.5~1417.5MHz'".
+    sofia_overrides : dict or None
+        `{'scfind.kernelsZ': ..., 'linker.radiusZ': ..., 'linker.minSizeZ': ...}` when `mode`
+        carries these fields, else None -- callers merge this into their own
+        `sofia_mask_params`/`sofia_final_params` dicts (never replace them outright, since
+        those dicts may carry other, unrelated overrides too)."""
+
+    if mode is not None:
+        imspw_halfwidth = mode['imspw_mhz'] / 2.
+    else:
+        imspw_halfwidth = GENERAL_IMSPW_MHZ / 2.
+
+    imspw_low = round(centralfreq_mhz - imspw_halfwidth, 4)
+    imspw_high = round(centralfreq_mhz + imspw_halfwidth, 4)
+    imspw = "'*:{0}~{1}MHz'".format(imspw_low, imspw_high)
+
+    sofia_overrides = None
+    if mode is not None and 'sofia_kernelsZ' in mode:
+        sofia_overrides = {
+            'scfind.kernelsZ': mode['sofia_kernelsZ'],
+            'linker.radiusZ': mode['sofia_linker_radiusZ'],
+            'linker.minSizeZ': mode['sofia_linker_minSizeZ'],
+        }
+
+    return imspw, sofia_overrides
+
+
 def get_mode_by_name(name):
 
     """Look up a `MODES` entry by its own 'name' field -- the counterpart to `identify_mode()`
