@@ -444,8 +444,18 @@ def run_script(func,logfile=''):
     taskvals, config = config_parser.parse_config(args['config'])
 
     continue_run = config_parser.validate_args(taskvals, 'run', 'continue', bool, default=True)
-    spw = config_parser.validate_args(taskvals, 'crosscal', 'spw', str)
-    nspw = config_parser.validate_args(taskvals, 'crosscal', 'nspw', int)
+
+    #spw/nspw only matter below for broadcasting continue=False into every per-SPW
+    #subdirectory's own config on failure (nspw>1) -- meaningless for a config with no per-SPW
+    #fanout to broadcast to at all, e.g. a '--combine'd run's config, which has no [crosscal]
+    #section (see combine_tracks.write_combined_config()) rather than a real one with spw=''/
+    #nspw=1 -- config_parser.validate_args()'s own 'default' only covers a missing *key*, not a
+    #missing *section* (`kwdict[section]` itself still raises KeyError first), so read the
+    #section directly rather than requiring every script's config to carry a [crosscal] stub
+    #purely to satisfy this. Same effective values ('', 1) a stub would have held either way.
+    crosscal_cfg = taskvals.get('crosscal', {})
+    spw = str(crosscal_cfg.get('spw', ''))
+    nspw = int(crosscal_cfg.get('nspw', 1))
 
     if continue_run:
         try:

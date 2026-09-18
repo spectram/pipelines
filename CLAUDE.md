@@ -201,8 +201,14 @@ overrides) and `write_master()` (including `expand_hi_combo_scripts()`'s per-sta
 and the summary/killJobs/findErrors/etc. helper scripts) — to build a full `submit_pipeline.sh` chaining
 `combine_tracks.py` → `hi_image.py`/`hi_sofia.py` (or `science_image.py`/`cont_sofia.py` for continuum),
 minus the crosscal/selfcal machinery that doesn't apply to an already-calibrated, already-concatenated MS
-(`combine_tracks.write_combined_config()` writes a minimal `[crosscal] spw=''`/`nspw=1` stub instead,
-since `bookkeeping.run_script()` unconditionally validates those two keys regardless of DAG shape).
+— `combine_tracks.write_combined_config()` writes no `[crosscal]` section at all (previously wrote a
+`spw=''`/`nspw=1` stub purely to satisfy `bookkeeping.run_script()`'s then-unconditional read of those two
+keys; fixed live, 2026-09-18 — `run_script()` now tolerates a config with no `[crosscal]` section,
+defaulting the same `('', 1)` a stub would have held, since those values only ever mattered for
+broadcasting a failure's `continue=False` into per-SPW subdirectories, meaningless when there's no
+per-SPW fanout to broadcast to). `write_combine_jobs()` itself bypasses `write_jobs()`/
+`get_config_kwargs(config, 'crosscal', CROSSCAL_CONFIG_KEYS)` entirely for the same reason — that call
+requires every `CROSSCAL_CONFIG_KEYS` key present, which a combined config deliberately never has.
 `[data] vis` and `[run] hi_contsub_vis`/`post_selfcal_vis` must both be bare filenames (not
 `os.path.join`'d with the output directory) — every script that reads them runs with cwd already at that
 output directory, and embedding the directory a second time silently doubles it up.

@@ -133,14 +133,16 @@ def resolve_track_vis(track_dir, hi_image, config_name='.config.tmp'):
 def write_combined_config(output_dir, tracks, source_vis, output_vis, hi_image, template_config=None):
 
     """Write a trimmed myconfig.txt in 'output_dir' for the combined MS -- [data]/[run]/
-    [combine]/[crosscal] always, plus [hi_image] (from default_config.txt's own shipped
-    template, NOT copied from any track -- see below) and, when 'template_config' is given,
-    [run] correlator_mode, when 'hi_image' is True. Deliberately omits [selfcal]/[contsub] and
-    the per-track [crosscal] calibration keys -- that work is already baked into the per-track
-    inputs being combined, and re-exposing those sections would misleadingly suggest they
-    still need running here; only a minimal [crosscal] spw/nspw stub is written, since every
-    script run via bookkeeping.run_script() (i.e. every script here except combine_tracks.py
-    itself) unconditionally validates those two keys even when no crosscal step is in its DAG.
+    [combine] always, plus [hi_image] (from default_config.txt's own shipped template, NOT
+    copied from any track -- see below) and, when 'template_config' is given, [run]
+    correlator_mode, when 'hi_image' is True. Deliberately omits [selfcal]/[contsub]/[crosscal]
+    entirely -- that work is already baked into the per-track inputs being combined, and
+    writing any of those sections (even a trimmed [crosscal] spw/nspw stub, which this
+    function used to write) would misleadingly suggest they still apply here.
+    bookkeeping.run_script() (every script here except combine_tracks.py itself -- see its own
+    '__main__' comment) tolerates a config with no [crosscal] section at all, defaulting
+    spw=''/nspw=1 for its own internal use (broadcasting a failure to per-SPW subdirectories,
+    meaningless here since there's no per-SPW fanout to broadcast to).
 
     [hi_image] starts from default_config.txt's own template, exactly like a real '-B' build
     would -- NOT copied from any one track's own myconfig.txt. Confirmed live (2026-09-18,
@@ -217,8 +219,13 @@ def write_combined_config(output_dir, tracks, source_vis, output_vis, hi_image, 
         run_dict['post_selfcal_vis'] = "'{0}'".format(output_vis)
     config_parser.overwrite_config(output_config, conf_dict=run_dict, conf_sec='run',
         sec_comment='# Internal variables for pipeline execution')
-    config_parser.overwrite_config(output_config, conf_dict={'spw': "''", 'nspw': 1}, conf_sec='crosscal')
 
+    #Deliberately no [crosscal] section at all -- bookkeeping.run_script() (every script here
+    #except combine_tracks.py itself, which never goes through it -- see its own '__main__'
+    #comment) tolerates a missing [crosscal] section, defaulting spw=''/nspw=1 exactly as a
+    #stub here once would have set explicitly (see bookkeeping.py's own comment). Writing a
+    #stub anyway would misleadingly suggest crosscal still applies to this already-calibrated,
+    #already-concatenated MS.
     if hi_image:
         #Real default, same source a fresh '-B' build itself copies from -- see
         #processMeerKAT.default_config(). Not the per-track myconfig.txt copy this replaced
@@ -307,10 +314,12 @@ def main(args, taskvals):
 
 if __name__ == '__main__':
 
-    #Not bookkeeping.run_script(): that helper unconditionally validates [crosscal] spw/nspw
-    #(for its nspw>1 continue=False broadcasting to every SPW subdirectory on error) -- logic
-    #that doesn't apply here, since this script's config deliberately has no [crosscal] section
-    #and there's no per-SPW fanout to broadcast to. Minimal self-contained equivalent instead.
+    #Not bookkeeping.run_script(): that helper's nspw>1 continue=False broadcasting (to every
+    #per-SPW subdirectory on error) doesn't apply here -- this script's config deliberately has
+    #no [crosscal] section at all (no per-SPW fanout to broadcast to). run_script() itself
+    #tolerates that fine now (defaults spw=''/nspw=1), so this duplication is more historical
+    #than strictly required at this point -- kept as its own minimal equivalent rather than
+    #switched over untested, not because run_script() would still reject this config.
     args = config_parser.parse_args()
     taskvals, config = config_parser.parse_config(args['config'])
     continue_run = config_parser.validate_args(taskvals, 'run', 'continue', bool, default=True)

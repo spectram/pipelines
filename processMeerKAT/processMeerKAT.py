@@ -1505,8 +1505,11 @@ def write_combine_jobs(config, hi_image, arg_dict):
     expand_cont_image_stage_scripts()'s per-stage/per-combo replication) machinery '-R' uses
     for a single track -- minus the crosscal/selfcal machinery that doesn't apply to an
     already-calibrated, already-concatenated combined MS (see
-    combine_tracks.write_combined_config()'s minimal '[crosscal]' stub). Does not submit
-    anything, matching '-R' itself. Must be called with cwd already at the combine output
+    combine_tracks.write_combined_config(), which writes no [crosscal] section at all).
+    Bypasses write_jobs()/get_config_kwargs(config, 'crosscal', ...) entirely for this reason
+    -- that call requires every CROSSCAL_CONFIG_KEYS key present, which a combined config
+    deliberately doesn't have. Does not submit anything, matching '-R' itself. Must be called
+    with cwd already at the combine output
     directory (e.g. 'M2') -- mirrors write_jobs()'s own convention of writing/reading paths
     relative to the run directory.
 
