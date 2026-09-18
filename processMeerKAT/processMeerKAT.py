@@ -420,6 +420,7 @@ def parse_args():
     parser.add_argument("-F","--centralspw", metavar="MHz", required=False, type=float, default=None, help="Central frequency (MHz) to centre [crosscal] spw (+-10MHz) and [hi_image] imspw (see correlator_modes.py) around, e.g. for centring on a redshifted HI line. Only applied when [-H --hi_image] is also set -- ignored (with a warning) otherwise [default: None, i.e. read_ms.py falls back to the input MS's own centre frequency].")
     parser.add_argument("--contsub", action="store_true", required=False, default=False, help="Run uvsub.py/uvcontsub.py to produce continuum-subtracted visibilities, independent of [-H --hi_image] (e.g. for contsub'd data without full cube imaging) [default: False].")
     parser.add_argument("-x","--nofields", action="store_true", required=False, default=False, help="Do not read the input MS to extract field IDs [default: False].")
+    parser.add_argument("--parallel_combos", action="store_true", required=False, default=False, help="Only with '--combine -H' and more than one '[hi_image] hi_combos' entry: run each combo as its own independent parallel job chain (rooted at the single 'combine_tracks.sbatch' job, which still runs only once) instead of one flattened sequential chain -- see write_combine_jobs_parallel_combos() [default: False, i.e. combos run one after another as today].")
     parser.add_argument("-j","--justrun", action="store_true", required=False, default=False, help="Just run the pipeline, don't rebuild each job script if it exists [default: False].")
 
     #add mutually exclusive group - don't want to build config, run pipeline, or display version at same time
@@ -1494,7 +1495,201 @@ def write_jobs(config, scripts=[], threadsafe=[], containers=[], num_precal_scri
         write_master(MASTER_SCRIPT,config,scripts=scripts,submit=submit,pad_length=pad_length,verbose=verbose,echo=echo,dependencies=dependencies,slurm_kwargs=kwargs)
 
 
-def write_combine_jobs(config, hi_image, arg_dict):
+def write_parallel_combo_configs(config):
+
+    """Write one config copy per '[hi_image] hi_combos' entry -- '.config.combo<i>.tmp' in the
+    same directory as 'config' -- each identical to 'config' except '[hi_image] combo' fixed
+    to 'i' (not reset to 0) and 'stage' reset to 0. Mirrors spw_split()'s "own directory, own
+    config copy" pattern for giving independent parallel units independent state, but simpler:
+    unlike spw_split(), there's no need to trim 'hi_combos'/'cell' down to a single entry per
+    copy, since fixing 'combo=i' against the *unchanged, full* list already selects the right
+    entry (hi_image.py/hi_sofia.py's own 'hi_combos[combo]'/'cell[combo]' indexing) -- and
+    fixing 'combo=i' rather than resetting to 0 means 'hi_image.py's own
+    'combo_dir = "hi_combo{0}".format(combo)' naming lands on exactly the same 'hi_combo<i>/'
+    directory a sequential (non-parallel) run of this same combo would have used, with zero
+    changes needed to hi_image.py/hi_sofia.py themselves -- they can't tell the difference
+    between "the i-th combo in an N-combo sequential chain" and "the only combo this particular
+    config copy will ever point at."
+
+    Written at DAG-generation time (here), not deferred to './submit_pipeline.sh' run time the
+    way the single shared '.config.tmp' snapshot is (see write_master()) -- simpler, avoids
+    embedding config-patching logic in bash, at the cost that re-editing 'config' after this
+    runs (e.g. hand-editing 'myconfig.txt' again) won't be reflected until this is called again
+    (same discipline as regenerating 'submit_pipeline.sh' itself after a hand edit).
+
+    Arguments:
+    ----------
+    config : str
+        Path to config file (e.g. 'myconfig.txt') with a real '[hi_image] hi_combos'.
+
+    Returns:
+    --------
+    combo_configs : list (of str)
+        One per-combo config filename, same order as 'hi_combos'."""
+
+    hi_combos = config_parser.get_key(config, 'hi_image', 'hi_combos')
+    combo_configs = []
+    for i in range(len(hi_combos)):
+        combo_config = os.path.join(os.path.dirname(config), '.config.combo{0}.tmp'.format(i))
+        copyfile(config, combo_config)
+        config_parser.overwrite_config(combo_config, conf_dict={'combo': i, 'stage': 0}, conf_sec='hi_image',
+            sec_comment='# Internal variables for pipeline execution')
+        combo_configs.append(combo_config)
+    return combo_configs
+
+
+def write_combine_master_parallel(filename, config, combine_sbatch, combo_sbatch_pairs, nstages,
+                                   dir='jobScripts', pad_length=0, verbose=False, echo=True, slurm_kwargs={}):
+
+    """The parallel-combo counterpart to write_master(): 'combine_sbatch' submitted once with
+    no dependency, then one independent 'afterok:$ROOT_ID' dependency chain per combo (not
+    chained to each other) -- each chain replicating its own (image, sofia) sbatch pair
+    'nstages' times, mirroring how a single sequential chain replicates one pair
+    'nstages * ncombos' times (see _expand_stage_pair_scripts()), just split into N
+    independent chains instead of one flattened one. Reuses write_all_bash_jobs_scripts() for
+    the summary/killJobs/findErrors/etc. helper scripts unchanged -- those only need the full
+    flat job-ID list, not the dependency structure that produced it.
+
+    Doesn't support resuming a partially-run parallel combo set (always starts every combo
+    fresh at combo=<i>/stage=0, via write_parallel_combo_configs()) -- apply this session's
+    existing manual-resume recipe (CLAUDE.md) per combo config if needed, same as the
+    sequential case.
+
+    Arguments:
+    ----------
+    filename : str
+        Path to the master submission script to write (e.g. 'submit_pipeline.sh').
+    config : str
+        Path to config file (used for '[run] timestamp' and the jobScripts/ config copy).
+    combine_sbatch : str
+        'combine_tracks.sbatch'-style filename, submitted once with no dependency.
+    combo_sbatch_pairs : list (of (str, str))
+        One (image_sbatch, sofia_sbatch) filename pair per combo, same order as 'hi_combos'.
+    nstages : int
+        Number of stages each combo's own chain repeats its (image, sofia) pair for.
+    dir, pad_length, verbose, echo, slurm_kwargs :
+        As write_master()."""
+
+    master = open(filename, 'w')
+    master.write('#!/bin/bash\n')
+    timestamp = config_parser.get_key(config, 'run', 'timestamp')
+    if timestamp == '':
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        config_parser.overwrite_config(config, conf_dict={'timestamp': "'{0}'".format(timestamp)}, conf_sec='run',
+            sec_comment='# Internal variables for pipeline execution')
+
+    #Kept for consistency/manual inspection alongside the real per-combo configs each job
+    #actually uses (write_parallel_combo_configs()'s '.config.combo<i>.tmp' files) -- not
+    #read by any of the jobs below.
+    if verbose:
+        master.write("\necho Copying \'{0}\' to \'{1}\', and using this to run pipeline.\n".format(config, TMP_CONFIG))
+    master.write('cp {0} {1}\n'.format(config, TMP_CONFIG))
+
+    master.write('\n#{0}\n'.format(combine_sbatch))
+    master.write("ROOT_ID=$(sbatch {0} | cut -d ' ' -f4)\n".format(combine_sbatch))
+    master.write('IDs=$ROOT_ID\n')
+
+    for i, (image_sbatch, sofia_sbatch) in enumerate(combo_sbatch_pairs):
+        var = 'C{0}'.format(i)
+        dep = 'ROOT_ID'
+        for stage in range(nstages):
+            for script in (image_sbatch, sofia_sbatch):
+                command = "sbatch -d afterok:${0} --kill-on-invalid-dep=yes".format(dep)
+                master.write('\n#combo {0}: {1}\n'.format(i, script))
+                if verbose:
+                    master.write('echo Submitting {0} to SLURM queue with following command\necho {1} {0}.\n'.format(script, command))
+                master.write("{0}=$({1} {2} | cut -d ' ' -f4)\n".format(var, command, script))
+                master.write("IDs+=,${0}\n".format(var))
+                dep = var
+
+    master.write('\n#Output message and create {0} directory\n'.format(dir))
+    master.write('echo Submitted sbatch jobs with following IDs: $IDs\n')
+    master.write('mkdir -p {0}\n'.format(dir))
+
+    master.write('\n#Add time as extn to this pipeline run, to give unique filenames')
+    master.write("\nDATE={0}".format(timestamp))
+    extn = '_$DATE.sh'
+
+    master.write('\n#Copy contents of config file to {0} directory\n'.format(dir))
+    master.write('cp {0} {1}/{2}_$DATE.txt\n'.format(config, dir, os.path.splitext(config)[0]))
+
+    write_all_bash_jobs_scripts(master, extn, IDs='IDs', dir=dir, echo=echo, pad_length=pad_length,
+        slurm_kwargs=slurm_kwargs, devel_partition=get_cluster_kwargs(config)['devel_partition'])
+
+    master.close()
+    os.chmod(filename, 509)
+    logger.info('Master script "{0}" written in "{1}", but will not run.'.format(filename, os.path.split(os.getcwd())[-1]))
+
+
+def write_combine_jobs_parallel_combos(config, arg_dict):
+
+    """The '[hi_image] hi_combos'-parallel counterpart to write_combine_jobs()'s default
+    (sequential) path -- see write_combine_jobs()'s own docstring for when this is used
+    instead. 'combine_tracks.sbatch' still runs exactly once (write_combine_master_parallel()
+    submits it with no dependency, and every combo's own chain depends on that single job,
+    never on each other) -- only the HI-imaging chain fans out, into one independent
+    'afterok'-chained sub-chain per combo, each reading its own config copy
+    (write_parallel_combo_configs()) rather than the single shared config every combo's jobs
+    read from in the sequential path.
+
+    Arguments:
+    ----------
+    config : str
+        Path to config file, relative to cwd (e.g. 'myconfig.txt').
+    arg_dict : dict
+        As write_combine_jobs()."""
+
+    correlator_mode = config_parser.get_key(config, 'run', 'correlator_mode')
+    cluster_kwargs = get_cluster_kwargs(config)
+    nodes = arg_dict.get('nodes', 8)
+    ntasks_per_node = arg_dict.get('ntasks_per_node', 4)
+    mem = int(arg_dict.get('mem', DEFAULT_MEM_GB))
+    partition = arg_dict.get('partition', 'work')
+    time = arg_dict.get('time', '12:00:00')
+    account = arg_dict.get('account', '')
+    reservation = arg_dict.get('reservation', '')
+    modules = arg_dict.get('modules', [])
+
+    def write_one(script_name, threadsafe, container, config_arg, sbatch_name):
+        container = container or arg_dict.get('container', CONTAINER)
+        if threadsafe:
+            role = script_registry.get_properties(script_name).pipeline_role
+            override = slurm_config_registry.get_override(role, mode_name=correlator_mode)
+            script_nodes = override.nodes if override.nodes is not None else nodes
+            script_tasks = override.ntasks_per_node if override.ntasks_per_node is not None else ntasks_per_node
+            write_sbatch(script_name, '--config {0}'.format(config_arg), nodes=script_nodes, tasks=script_tasks, mem=mem,
+                container=container, partition=partition, time=time, name=sbatch_name, account=account,
+                reservation=reservation, modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
+        else:
+            write_sbatch(script_name, '--config {0}'.format(config_arg), nodes=1, tasks=1, mem=mem, container=container,
+                partition=partition, time=time, name=sbatch_name, account=account, reservation=reservation,
+                modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
+
+    write_one('combine_tracks.py', False, '', TMP_CONFIG, 'combine_tracks')
+    combine_sbatch = 'combine_tracks.sbatch'
+
+    combo_configs = write_parallel_combo_configs(config)
+    combo_sbatch_pairs = []
+    for i, combo_config in enumerate(combo_configs):
+        image_name = 'hi_image_combo{0}'.format(i)
+        sofia_name = 'hi_sofia_combo{0}'.format(i)
+        write_one('hi_image.py', True, '', combo_config, image_name)
+        write_one('hi_sofia.py', False, SOFIA_CONTAINER, combo_config, sofia_name)
+        combo_sbatch_pairs.append((image_name + '.sbatch', sofia_name + '.sbatch'))
+
+    nstages = len(config_parser.get_key(config, 'hi_image', 'stages'))
+    slurm_kwargs = {'account': account, 'partition': partition,
+        'exclude': arg_dict.get('exclude', ''), 'reservation': reservation}
+    write_combine_master_parallel(MASTER_SCRIPT, config, combine_sbatch, combo_sbatch_pairs, nstages,
+        pad_length=0, verbose=False, echo=True, slurm_kwargs=slurm_kwargs)
+
+    logger.info('Wrote "{0}" chaining "{1}" (runs once) then {2} independent per-combo chains '
+        '({3} hi_image/hi_sofia pairs each). Resource sizing beyond what correlator_modes.py has actually '
+        'profiled (see [run] correlator_mode) is an unprofiled default -- review before running '
+        '"./{0}".'.format(MASTER_SCRIPT, combine_sbatch, len(combo_configs), nstages))
+
+
+def write_combine_jobs(config, hi_image, arg_dict, parallel_combos=False):
 
     """Write the sbatch chain for a '--combine'd run directory -- 'combine_tracks.sbatch'
     followed by 'hi_image.sbatch'/'hi_sofia.sbatch' (HI imaging) or
@@ -1522,7 +1717,24 @@ def write_combine_jobs(config, hi_image, arg_dict):
     arg_dict : dict
         Parsed CLI args (vars(args)) -- reuses the same account/partition/mem/nodes/
         ntasks_per_node/time/container/modules already used for '-B'/'-R', so '--combine'
-        doesn't need its own separate set of resource flags."""
+        doesn't need its own separate set of resource flags.
+    parallel_combos : bool, optional
+        Run each '[hi_image] hi_combos' entry as its own independent parallel job chain
+        (write_combine_jobs_parallel_combos()) instead of one flattened sequential chain --
+        see that function and write_parallel_combo_configs() for the mechanism. Ignored (falls
+        back to the default sequential path, unchanged) when hi_image=False (continuum
+        combines have no combo axis) or there's only one combo to begin with -- nothing to
+        parallelize either way. Default False preserves every existing caller's behaviour
+        exactly; added 2026-09-18, after a real multi-combo run had already been submitted
+        sequentially -- deliberately a separate opt-in code path (write_combine_jobs_parallel_combos()),
+        not a rewrite of this function's own body, so that run's already-generated sbatch
+        files/already-queued jobs are entirely unaffected by this addition."""
+
+    if parallel_combos and hi_image and config_parser.has_section(config, 'hi_image'):
+        hi_combos = config_parser.get_key(config, 'hi_image', 'hi_combos')
+        if len(hi_combos) > 1:
+            write_combine_jobs_parallel_combos(config, arg_dict)
+            return
 
     scripts = [('combine_tracks.py', False, '')]
     if hi_image:
@@ -1691,7 +1903,7 @@ def run_combine(wdir, hi_image, arg_dict):
             logger.debug('Using the following command:\n\t{0}'.format(command))
             os.system(command)
 
-        write_combine_jobs('myconfig.txt', hi_image, arg_dict)
+        write_combine_jobs('myconfig.txt', hi_image, arg_dict, parallel_combos=arg_dict.get('parallel_combos', False))
     finally:
         os.chdir(cwd)
 
