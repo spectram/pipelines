@@ -1182,7 +1182,7 @@ def write_spw_master(filename,config,SPWs,precal_scripts,postcal_scripts,submit,
         logger.info('Master script "{0}" written in "{1}", but will not run.'.format(filename,os.path.split(os.getcwd())[1]))
 
 
-def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_length=5,verbose=False, echo=True, dependencies='',slurm_kwargs={}):
+def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_length=5,verbose=False, echo=True, dependencies='',slurm_kwargs={}, parallel_chains=None):
 
     """Write master pipeline submission script, calling various sbatch files, and writing ancillary job scripts.
 
@@ -1193,7 +1193,10 @@ def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_le
     config : str
         Path to config file.
     scripts : list, optional
-        List of sbatch scripts to call in order.
+        List of sbatch scripts to call in order (default: flat-chain mode, every entry
+        chained via 'afterok' on everything before it). When 'parallel_chains' is given
+        instead, only 'scripts[0]' is used -- the single root script submitted with no
+        dependency, e.g. 'combine_tracks.sbatch'.
     submit : bool, optional
         Submit jobs to SLURM queue immediately?
     dir : str, optional
@@ -1205,9 +1208,22 @@ def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_le
     echo : bool, optional
         Echo the pupose of each job script for the user?
     dependencies : str, optional
-        Comma-separated list of SLURM job dependencies.
+        Comma-separated list of SLURM job dependencies. Ignored when 'parallel_chains' is
+        given (only meaningful for the single-root flat-chain mode).
     slurm_kwargs : list, optional
-        Parameters parsed from [slurm] section of config."""
+        Parameters parsed from [slurm] section of config.
+    parallel_chains : list (of list of str), optional
+        When given, switches from the default single flattened 'afterok' chain to N
+        independent chains, each rooted at 'scripts[0]''s own job ID (not chained to each
+        other) -- e.g. one chain per '[hi_image] hi_combos' entry
+        (write_combine_jobs_parallel_combos()), where every combo's own multi-stage chain is
+        independent of every other combo's, but all still depend on the same single
+        'combine_tracks.sbatch' root. Each inner list is that chain's own sbatch filenames,
+        submitted in order via sequential 'afterok' dependencies within the chain. Doesn't
+        call expand_selfcal_loop_scripts()/expand_hi_combo_scripts()/
+        expand_cont_image_stage_scripts() -- the caller is expected to have already resolved
+        each chain's own script list (those expand_*() helpers assume one flat chain, not N
+        independent ones) [default: None, i.e. the original single-chain behaviour]."""
 
     master = open(filename,'w')
     master.write('#!/bin/bash\n')
@@ -1221,30 +1237,50 @@ def write_master(filename,config,scripts=[],submit=False,dir='jobScripts',pad_le
         master.write("\necho Copying \'{0}\' to \'{1}\', and using this to run pipeline.\n".format(config,TMP_CONFIG))
     master.write('cp {0} {1}\n'.format(config, TMP_CONFIG))
 
-    #Expand a configured selfcal_part1/selfcal_part2 pair into the full loop chain
-    scripts = expand_selfcal_loop_scripts(scripts, config, handle_run_sofia=True)
-    scripts = expand_hi_combo_scripts(scripts, config)
-    scripts = expand_cont_image_stage_scripts(scripts, config)
+    if parallel_chains is None:
+        #Expand a configured selfcal_part1/selfcal_part2 pair into the full loop chain
+        scripts = expand_selfcal_loop_scripts(scripts, config, handle_run_sofia=True)
+        scripts = expand_hi_combo_scripts(scripts, config)
+        scripts = expand_cont_image_stage_scripts(scripts, config)
 
-    command = 'sbatch'
+        command = 'sbatch'
 
-    if dependencies != '':
-        master.write('\n#Run after these dependencies\nDep={0}\n'.format(dependencies))
-        command += " -d afterok:${Dep//,/:} --kill-on-invalid-dep=yes"
-    master.write('\n#{0}\n'.format(scripts[0]))
-    if verbose:
-        master.write('echo Submitting {0} to SLURM queue with following command:\necho {1} {0}.\n'.format(scripts[0],command))
-    master.write("IDs=$({0} {1} | cut -d ' ' -f4)\n".format(command,scripts[0]))
-    scripts.pop(0)
-
-
-    #Submit each script with dependency on all previous scripts, and extract job IDs
-    for script in scripts:
-        command = "sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes"
-        master.write('\n#{0}\n'.format(script))
+        if dependencies != '':
+            master.write('\n#Run after these dependencies\nDep={0}\n'.format(dependencies))
+            command += " -d afterok:${Dep//,/:} --kill-on-invalid-dep=yes"
+        master.write('\n#{0}\n'.format(scripts[0]))
         if verbose:
-            master.write('echo Submitting {0} to SLURM queue with following command\necho {1} {0}.\n'.format(script,command))
-        master.write("IDs+=,$({0} {1} | cut -d ' ' -f4)\n".format(command,script))
+            master.write('echo Submitting {0} to SLURM queue with following command:\necho {1} {0}.\n'.format(scripts[0],command))
+        master.write("IDs=$({0} {1} | cut -d ' ' -f4)\n".format(command,scripts[0]))
+        scripts.pop(0)
+
+
+        #Submit each script with dependency on all previous scripts, and extract job IDs
+        for script in scripts:
+            command = "sbatch -d afterok:${IDs//,/:} --kill-on-invalid-dep=yes"
+            master.write('\n#{0}\n'.format(script))
+            if verbose:
+                master.write('echo Submitting {0} to SLURM queue with following command\necho {1} {0}.\n'.format(script,command))
+            master.write("IDs+=,$({0} {1} | cut -d ' ' -f4)\n".format(command,script))
+    else:
+        #Root script (e.g. 'combine_tracks.sbatch') submitted once, with no dependency --
+        #every chain below depends on it ('afterok:$ROOT_ID'), never on each other.
+        root_script = scripts[0]
+        master.write('\n#{0}\n'.format(root_script))
+        master.write("ROOT_ID=$(sbatch {0} | cut -d ' ' -f4)\n".format(root_script))
+        master.write('IDs=$ROOT_ID\n')
+
+        for i, chain in enumerate(parallel_chains):
+            var = 'C{0}'.format(i)
+            dep = 'ROOT_ID'
+            for script in chain:
+                command = "sbatch -d afterok:${0} --kill-on-invalid-dep=yes".format(dep)
+                master.write('\n#chain {0}: {1}\n'.format(i, script))
+                if verbose:
+                    master.write('echo Submitting {0} to SLURM queue with following command\necho {1} {0}.\n'.format(script,command))
+                master.write("{0}=$({1} {2} | cut -d ' ' -f4)\n".format(var,command,script))
+                master.write("IDs+=,${0}\n".format(var))
+                dep = var
 
     master.write('\n#Output message and create {0} directory\n'.format(dir))
     master.write('echo Submitted sbatch jobs with following IDs: $IDs\n') #DON'T CHANGE as this output is relied on by bash sed expression in write_spw_master()
@@ -1538,99 +1574,80 @@ def write_parallel_combo_configs(config):
     return combo_configs
 
 
-def write_combine_master_parallel(filename, config, combine_sbatch, combo_sbatch_pairs, nstages,
-                                   dir='jobScripts', pad_length=0, verbose=False, echo=True, slurm_kwargs={}):
+def write_combine_script(script, threadsafe, container, config_arg, sbatch_name, correlator_mode, cluster_kwargs, arg_dict):
 
-    """The parallel-combo counterpart to write_master(): 'combine_sbatch' submitted once with
-    no dependency, then one independent 'afterok:$ROOT_ID' dependency chain per combo (not
-    chained to each other) -- each chain replicating its own (image, sofia) sbatch pair
-    'nstages' times, mirroring how a single sequential chain replicates one pair
-    'nstages * ncombos' times (see _expand_stage_pair_scripts()), just split into N
-    independent chains instead of one flattened one. Reuses write_all_bash_jobs_scripts() for
-    the summary/killJobs/findErrors/etc. helper scripts unchanged -- those only need the full
-    flat job-ID list, not the dependency structure that produced it.
-
-    Doesn't support resuming a partially-run parallel combo set (always starts every combo
-    fresh at combo=<i>/stage=0, via write_parallel_combo_configs()) -- apply this session's
-    existing manual-resume recipe (CLAUDE.md) per combo config if needed, same as the
-    sequential case.
+    """Write one script's sbatch file for a '--combine'd run -- shared by write_combine_jobs()'s
+    default (single shared config, all combos in one flattened chain) and
+    write_combine_jobs_parallel_combos()'s (one config copy per combo, one independent chain
+    per combo) paths, which differ only in which config file/sbatch name each script call
+    uses, not in how a script's own resource request is resolved.
 
     Arguments:
     ----------
-    filename : str
-        Path to the master submission script to write (e.g. 'submit_pipeline.sh').
-    config : str
-        Path to config file (used for '[run] timestamp' and the jobScripts/ config copy).
-    combine_sbatch : str
-        'combine_tracks.sbatch'-style filename, submitted once with no dependency.
-    combo_sbatch_pairs : list (of (str, str))
-        One (image_sbatch, sofia_sbatch) filename pair per combo, same order as 'hi_combos'.
-    nstages : int
-        Number of stages each combo's own chain repeats its (image, sofia) pair for.
-    dir, pad_length, verbose, echo, slurm_kwargs :
-        As write_master()."""
+    script : str
+        Script filename (e.g. 'hi_image.py').
+    threadsafe : bool
+        Full configured ntasks_per_node (with slurm_config_registry's per-'correlator_mode'
+        override applied if one exists for this script's pipeline_role) if True, a single
+        task if False -- same 'threadsafe' semantics as the main '[slurm] scripts' list (see
+        CLAUDE.md).
+    container : str
+        Container override for this script, or '' to fall back to arg_dict['container'].
+    config_arg : str
+        '--config' value this script's sbatch file should pass (e.g. TMP_CONFIG, or one of
+        write_parallel_combo_configs()'s per-combo copies).
+    sbatch_name : str
+        Base name for the sbatch file/#SBATCH job-name (no '.py'/'.sbatch' extension).
+    correlator_mode : str
+        '[run] correlator_mode', for slurm_config_registry's per-mode resource override.
+    cluster_kwargs : dict
+        As get_cluster_kwargs().
+    arg_dict : dict
+        Parsed CLI args (vars(args)) -- account/partition/mem/nodes/ntasks_per_node/time/
+        container/modules/reservation."""
 
-    master = open(filename, 'w')
-    master.write('#!/bin/bash\n')
-    timestamp = config_parser.get_key(config, 'run', 'timestamp')
-    if timestamp == '':
-        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        config_parser.overwrite_config(config, conf_dict={'timestamp': "'{0}'".format(timestamp)}, conf_sec='run',
-            sec_comment='# Internal variables for pipeline execution')
+    nodes = arg_dict.get('nodes', 8)
+    ntasks_per_node = arg_dict.get('ntasks_per_node', 4)
+    mem = int(arg_dict.get('mem', DEFAULT_MEM_GB))
+    partition = arg_dict.get('partition', 'work')
+    time = arg_dict.get('time', '12:00:00')
+    account = arg_dict.get('account', '')
+    reservation = arg_dict.get('reservation', '')
+    modules = arg_dict.get('modules', [])
+    container = container or arg_dict.get('container', CONTAINER)
 
-    #Kept for consistency/manual inspection alongside the real per-combo configs each job
-    #actually uses (write_parallel_combo_configs()'s '.config.combo<i>.tmp' files) -- not
-    #read by any of the jobs below.
-    if verbose:
-        master.write("\necho Copying \'{0}\' to \'{1}\', and using this to run pipeline.\n".format(config, TMP_CONFIG))
-    master.write('cp {0} {1}\n'.format(config, TMP_CONFIG))
-
-    master.write('\n#{0}\n'.format(combine_sbatch))
-    master.write("ROOT_ID=$(sbatch {0} | cut -d ' ' -f4)\n".format(combine_sbatch))
-    master.write('IDs=$ROOT_ID\n')
-
-    for i, (image_sbatch, sofia_sbatch) in enumerate(combo_sbatch_pairs):
-        var = 'C{0}'.format(i)
-        dep = 'ROOT_ID'
-        for stage in range(nstages):
-            for script in (image_sbatch, sofia_sbatch):
-                command = "sbatch -d afterok:${0} --kill-on-invalid-dep=yes".format(dep)
-                master.write('\n#combo {0}: {1}\n'.format(i, script))
-                if verbose:
-                    master.write('echo Submitting {0} to SLURM queue with following command\necho {1} {0}.\n'.format(script, command))
-                master.write("{0}=$({1} {2} | cut -d ' ' -f4)\n".format(var, command, script))
-                master.write("IDs+=,${0}\n".format(var))
-                dep = var
-
-    master.write('\n#Output message and create {0} directory\n'.format(dir))
-    master.write('echo Submitted sbatch jobs with following IDs: $IDs\n')
-    master.write('mkdir -p {0}\n'.format(dir))
-
-    master.write('\n#Add time as extn to this pipeline run, to give unique filenames')
-    master.write("\nDATE={0}".format(timestamp))
-    extn = '_$DATE.sh'
-
-    master.write('\n#Copy contents of config file to {0} directory\n'.format(dir))
-    master.write('cp {0} {1}/{2}_$DATE.txt\n'.format(config, dir, os.path.splitext(config)[0]))
-
-    write_all_bash_jobs_scripts(master, extn, IDs='IDs', dir=dir, echo=echo, pad_length=pad_length,
-        slurm_kwargs=slurm_kwargs, devel_partition=get_cluster_kwargs(config)['devel_partition'])
-
-    master.close()
-    os.chmod(filename, 509)
-    logger.info('Master script "{0}" written in "{1}", but will not run.'.format(filename, os.path.split(os.getcwd())[-1]))
+    if threadsafe:
+        #Same per-script mode-override lookup write_jobs() applies for every threadsafe
+        #script -- e.g. this is what gives hi_image.py its profiled nodes=2/
+        #ntasks_per_node=8 for '32K_NE107M' (see correlator_modes.py) instead of whatever
+        #generic [[[slurm]]] nodes/ntasks_per_node this '--combine' call happened to be
+        #invoked with.
+        role = script_registry.get_properties(script).pipeline_role
+        override = slurm_config_registry.get_override(role, mode_name=correlator_mode)
+        script_nodes = override.nodes if override.nodes is not None else nodes
+        script_tasks = override.ntasks_per_node if override.ntasks_per_node is not None else ntasks_per_node
+        write_sbatch(script, '--config {0}'.format(config_arg), nodes=script_nodes, tasks=script_tasks, mem=mem,
+            container=container, partition=partition, time=time, name=sbatch_name, account=account,
+            reservation=reservation, modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
+    else:
+        write_sbatch(script, '--config {0}'.format(config_arg), nodes=1, tasks=1, mem=mem, container=container,
+            partition=partition, time=time, name=sbatch_name, account=account, reservation=reservation,
+            modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
 
 
 def write_combine_jobs_parallel_combos(config, arg_dict):
 
     """The '[hi_image] hi_combos'-parallel counterpart to write_combine_jobs()'s default
     (sequential) path -- see write_combine_jobs()'s own docstring for when this is used
-    instead. 'combine_tracks.sbatch' still runs exactly once (write_combine_master_parallel()
-    submits it with no dependency, and every combo's own chain depends on that single job,
-    never on each other) -- only the HI-imaging chain fans out, into one independent
-    'afterok'-chained sub-chain per combo, each reading its own config copy
+    instead. 'combine_tracks.sbatch' still runs exactly once (write_master()'s
+    'parallel_chains' mode submits it with no dependency, and every combo's own chain depends
+    on that single job, never on each other) -- only the HI-imaging chain fans out, into one
+    independent 'afterok'-chained sub-chain per combo, each reading its own config copy
     (write_parallel_combo_configs()) rather than the single shared config every combo's jobs
-    read from in the sequential path.
+    read from in the sequential path. Doesn't support resuming a partially-run parallel combo
+    set (always starts every combo fresh at combo=<i>/stage=0) -- apply this session's
+    existing manual-resume recipe (CLAUDE.md) per combo config if needed, same as the
+    sequential case.
 
     Arguments:
     ----------
@@ -1641,50 +1658,35 @@ def write_combine_jobs_parallel_combos(config, arg_dict):
 
     correlator_mode = config_parser.get_key(config, 'run', 'correlator_mode')
     cluster_kwargs = get_cluster_kwargs(config)
-    nodes = arg_dict.get('nodes', 8)
-    ntasks_per_node = arg_dict.get('ntasks_per_node', 4)
-    mem = int(arg_dict.get('mem', DEFAULT_MEM_GB))
-    partition = arg_dict.get('partition', 'work')
-    time = arg_dict.get('time', '12:00:00')
-    account = arg_dict.get('account', '')
-    reservation = arg_dict.get('reservation', '')
-    modules = arg_dict.get('modules', [])
 
-    def write_one(script_name, threadsafe, container, config_arg, sbatch_name):
-        container = container or arg_dict.get('container', CONTAINER)
-        if threadsafe:
-            role = script_registry.get_properties(script_name).pipeline_role
-            override = slurm_config_registry.get_override(role, mode_name=correlator_mode)
-            script_nodes = override.nodes if override.nodes is not None else nodes
-            script_tasks = override.ntasks_per_node if override.ntasks_per_node is not None else ntasks_per_node
-            write_sbatch(script_name, '--config {0}'.format(config_arg), nodes=script_nodes, tasks=script_tasks, mem=mem,
-                container=container, partition=partition, time=time, name=sbatch_name, account=account,
-                reservation=reservation, modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
-        else:
-            write_sbatch(script_name, '--config {0}'.format(config_arg), nodes=1, tasks=1, mem=mem, container=container,
-                partition=partition, time=time, name=sbatch_name, account=account, reservation=reservation,
-                modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
-
-    write_one('combine_tracks.py', False, '', TMP_CONFIG, 'combine_tracks')
+    write_combine_script('combine_tracks.py', False, '', TMP_CONFIG, 'combine_tracks', correlator_mode, cluster_kwargs, arg_dict)
     combine_sbatch = 'combine_tracks.sbatch'
 
+    nstages = len(config_parser.get_key(config, 'hi_image', 'stages'))
     combo_configs = write_parallel_combo_configs(config)
-    combo_sbatch_pairs = []
+    parallel_chains = []
     for i, combo_config in enumerate(combo_configs):
         image_name = 'hi_image_combo{0}'.format(i)
         sofia_name = 'hi_sofia_combo{0}'.format(i)
-        write_one('hi_image.py', True, '', combo_config, image_name)
-        write_one('hi_sofia.py', False, SOFIA_CONTAINER, combo_config, sofia_name)
-        combo_sbatch_pairs.append((image_name + '.sbatch', sofia_name + '.sbatch'))
+        write_combine_script('hi_image.py', True, '', combo_config, image_name, correlator_mode, cluster_kwargs, arg_dict)
+        write_combine_script('hi_sofia.py', False, SOFIA_CONTAINER, combo_config, sofia_name, correlator_mode, cluster_kwargs, arg_dict)
+        #One (image, sofia) pair per stage, same replication _expand_stage_pair_scripts() does
+        #for the sequential chain's single flattened list -- just scoped to this combo's own
+        #independent chain instead of the full nstages*ncombos flattened count.
+        parallel_chains.append([image_name + '.sbatch', sofia_name + '.sbatch'] * nstages)
 
-    nstages = len(config_parser.get_key(config, 'hi_image', 'stages'))
-    slurm_kwargs = {'account': account, 'partition': partition,
-        'exclude': arg_dict.get('exclude', ''), 'reservation': reservation}
-    write_combine_master_parallel(MASTER_SCRIPT, config, combine_sbatch, combo_sbatch_pairs, nstages,
-        pad_length=0, verbose=False, echo=True, slurm_kwargs=slurm_kwargs)
+    #write_master()'s helper-script generation needs 'account'/'partition'/'exclude'/
+    #'reservation' (the generated cleanup script's own standalone srun() call, outside any
+    #sbatch allocation -- see srun()) -- write_jobs() normally supplies this by passing its
+    #own full locals() through; reconstruct the same minimal subset here since this bypasses
+    #write_jobs() entirely.
+    slurm_kwargs = {'account': arg_dict.get('account', ''), 'partition': arg_dict.get('partition', 'work'),
+        'exclude': arg_dict.get('exclude', ''), 'reservation': arg_dict.get('reservation', '')}
+    write_master(MASTER_SCRIPT, config, scripts=[combine_sbatch], submit=False, pad_length=0, verbose=False, echo=True,
+        slurm_kwargs=slurm_kwargs, parallel_chains=parallel_chains)
 
-    logger.info('Wrote "{0}" chaining "{1}" (runs once) then {2} independent per-combo chains '
-        '({3} hi_image/hi_sofia pairs each). Resource sizing beyond what correlator_modes.py has actually '
+    logger.info('Wrote "{0}" chaining "{1}" (runs once) then {2} independent per-combo chains ({3} '
+        'hi_image/hi_sofia pairs each). Resource sizing beyond what correlator_modes.py has actually '
         'profiled (see [run] correlator_mode) is an unprofiled default -- review before running '
         '"./{0}".'.format(MASTER_SCRIPT, combine_sbatch, len(combo_configs), nstages))
 
@@ -1747,35 +1749,10 @@ def write_combine_jobs(config, hi_image, arg_dict, parallel_combos=False):
     #into this combined config by write_combined_config().
     correlator_mode = config_parser.get_key(config, 'run', 'correlator_mode')
     cluster_kwargs = get_cluster_kwargs(config)
-    nodes = arg_dict.get('nodes', 8)
-    ntasks_per_node = arg_dict.get('ntasks_per_node', 4)
-    mem = int(arg_dict.get('mem', DEFAULT_MEM_GB))
-    partition = arg_dict.get('partition', 'work')
-    time = arg_dict.get('time', '12:00:00')
-    account = arg_dict.get('account', '')
-    reservation = arg_dict.get('reservation', '')
-    modules = arg_dict.get('modules', [])
 
     for name, threadsafe, container in scripts:
         jobname = os.path.splitext(name)[0]
-        container = container or arg_dict.get('container', CONTAINER)
-        if threadsafe:
-            #Same per-script mode-override lookup write_jobs() applies for every threadsafe
-            #script -- e.g. this is what gives hi_image.py its profiled nodes=2/
-            #ntasks_per_node=8 for '32K_NE107M' (see correlator_modes.py) instead of whatever
-            #generic [[[slurm]]] nodes/ntasks_per_node this '--combine' call happened to be
-            #invoked with.
-            role = script_registry.get_properties(name).pipeline_role
-            override = slurm_config_registry.get_override(role, mode_name=correlator_mode)
-            script_nodes = override.nodes if override.nodes is not None else nodes
-            script_tasks = override.ntasks_per_node if override.ntasks_per_node is not None else ntasks_per_node
-            write_sbatch(name, '--config {0}'.format(TMP_CONFIG), nodes=script_nodes, tasks=script_tasks, mem=mem,
-                container=container, partition=partition, time=time, name=jobname, account=account,
-                reservation=reservation, modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
-        else:
-            write_sbatch(name, '--config {0}'.format(TMP_CONFIG), nodes=1, tasks=1, mem=mem, container=container,
-                partition=partition, time=time, name=jobname, account=account, reservation=reservation,
-                modules=modules, SPWs='', nspw=1, cluster=cluster_kwargs)
+        write_combine_script(name, threadsafe, container, TMP_CONFIG, jobname, correlator_mode, cluster_kwargs, arg_dict)
 
     sbatch_names = [os.path.splitext(s[0])[0] + '.sbatch' for s in scripts]
     #write_master() itself expands the configured hi_image/hi_sofia (or science_image/
@@ -1786,8 +1763,8 @@ def write_combine_jobs(config, hi_image, arg_dict, parallel_combos=False):
     #script's own standalone srun() call, outside any sbatch allocation -- see srun()) --
     #write_jobs() normally supplies this by passing its own full locals() through; reconstruct
     #the same minimal subset here since this bypasses write_jobs() entirely.
-    slurm_kwargs = {'account': account, 'partition': partition,
-        'exclude': arg_dict.get('exclude', ''), 'reservation': reservation}
+    slurm_kwargs = {'account': arg_dict.get('account', ''), 'partition': arg_dict.get('partition', 'work'),
+        'exclude': arg_dict.get('exclude', ''), 'reservation': arg_dict.get('reservation', '')}
     write_master(MASTER_SCRIPT, config, scripts=sbatch_names, submit=False, pad_length=0, verbose=False, echo=True,
         slurm_kwargs=slurm_kwargs)
 
