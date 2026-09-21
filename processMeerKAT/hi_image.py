@@ -99,9 +99,12 @@ def main(args, taskvals):
     imagename = imagename_fn(stage)
 
     mask = image_stages.resolve_mask(stages, stage, imagename_fn)
+    threshold = image_stages.resolve_threshold(stages, stage, imagename_fn)
+    if threshold != stages[stage].threshold:
+        logger.info('Stage {0} threshold not set -- derived {1} (1.3x the previous stage\'s SoFiA noise RMS).'.format(stage, threshold))
 
     outimage = image_engine.run_stage(vis=vis, imagename=imagename, mask=mask,
-        niter=stages[stage].niter, threshold=stages[stage].threshold,
+        niter=stages[stage].niter, threshold=threshold,
         imsize=imsize, cell=cell, robust=robust, uvtaper=uvtaper, scales=scales,
         gridder=gridder, wprojplanes=wprojplanes, deconvolver=deconvolver,
         weighting=weighting, specmode='cube', restfreq=restfreq, spw=imspw,

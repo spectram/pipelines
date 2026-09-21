@@ -21,6 +21,8 @@ The last stage in the list is implicitly "final": after its `tclean`, the engine
 SoFiA source-finding pass -- see `is_final()`. Every non-final stage instead gets a plain
 SoFiA masking pass feeding the next stage's `mask='prev'` -- see `resolve_mask()`."""
 
+import os
+import statistics
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -41,8 +43,10 @@ class Stage:
     #tclean `niter` for this stage.
     niter: int = 0
     #tclean threshold for this stage: a S/N value if >= 1.0, otherwise a CASA quantity
-    #string (e.g. '0.6mJy').
-    threshold: Any = 0
+    #string (e.g. '0.6mJy'). None (key omitted or explicitly None) means "derive it from
+    #the previous stage's SoFiA noise output" -- see `resolve_threshold()`; not valid for
+    #stage 0, which has no previous stage.
+    threshold: Any = None
 
 
 def parse_stages(raw_stages):
@@ -82,6 +86,8 @@ def parse_stages(raw_stages):
             raise ValueError("'stages'[{0}]['mask'] must be None or 'prev', got {1!r}.".format(stage_num, stage.mask))
         if stage_num == 0 and stage.mask == 'prev':
             raise ValueError("'stages'[0] (the initial, unmasked dirty image) cannot reference a previous stage ('prev') -- there isn't one.")
+        if stage_num == 0 and stage.threshold is None:
+            raise ValueError("'stages'[0] must set 'threshold' explicitly -- an undefined threshold is derived from the previous stage's SoFiA noise output, and stage 0 has no previous stage.")
 
         stages.append(stage)
 
@@ -146,3 +152,56 @@ def resolve_mask(stages, stage, imagename_fn):
     if stages[stage].mask == 'prev':
         return imagename_fn(stage - 1) + '_mask.fits'
     return ''
+
+
+def resolve_threshold(stages, stage, imagename_fn, factor=1.3):
+
+    """Resolve the `tclean` threshold for this stage. A threshold set explicitly in the
+    stage list is returned unchanged. An undefined one (None) is derived from the previous
+    stage's SoFiA masking pass: 'factor' times the median of that pass's per-channel noise
+    spectrum ('<previous imagename>_noise.txt', written because the shared SoFiA template
+    sets `output.writeNoise = true`), as a CASA quantity string in mJy.
+
+    The median is taken over non-zero channels only -- SoFiA writes a noise of exactly 0 for
+    channels with no data (e.g. cube channels beyond the selected spw, see CLAUDE.md), which
+    would otherwise drag the estimate down -- and the median rather than the mean keeps any
+    channels containing bright line emission from inflating it. Assumes the image (and hence
+    the noise file) is in Jy/beam, as `tclean` writes.
+
+    Arguments:
+    ----------
+    stages : list (of ``Stage``)
+    stage : int
+        Current imaging stage index.
+    imagename_fn : callable
+        Given a stage index, returns that stage's base imagename (no extension) -- same
+        callable `resolve_mask()` takes.
+    factor : float, optional
+        Multiple of the RMS to use as the threshold.
+
+    Returns:
+    --------
+    threshold : str or number
+        The explicit threshold, or the derived one as e.g. '0.296mJy'."""
+
+    threshold = stages[stage].threshold
+    if threshold is not None:
+        return threshold
+
+    noise_file = imagename_fn(stage - 1) + '_noise.txt'
+    if not os.path.exists(noise_file):
+        raise FileNotFoundError("'stages'[{0}] has no 'threshold', so it is derived from the previous stage's SoFiA noise output, but '{1}' doesn't exist. Set 'output.writeNoise = true' for the masking pass (default_hi_sofmask.txt does), or give this stage an explicit 'threshold'.".format(stage, noise_file))
+
+    values = []
+    with open(noise_file) as f:
+        for line in f:
+            if line.startswith('#') or not line.strip():
+                continue
+            value = float(line.split()[1])
+            if value > 0:
+                values.append(value)
+    if len(values) == 0:
+        raise ValueError("'{0}' has no non-zero noise values to derive 'stages'[{1}]['threshold'] from.".format(noise_file, stage))
+
+    rms = statistics.median(values)
+    return '{0:.4g}mJy'.format(factor * rms * 1e3)

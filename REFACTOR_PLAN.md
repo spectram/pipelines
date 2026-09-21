@@ -753,6 +753,18 @@ BARY-frame `imspw` numbers), CASA's own default channelization doesn't tightly c
 bounds. Standard fix is computing `start`/`width`/`nchan` explicitly from `imspw` and the mode's channel
 width — not implemented, since it wasn't the ask this session (diagnosis only, at the user's direction).
 
+*`--parallel_combos` added (`0f981ca`, merged into `write_master()`/`write_combine_script()` in `35a3295`),
+but `hi_combos` as a whole is WIP — deferred, run combos one at a time for now (2026-09-21).* Per-combo
+config copies (`.config.combo<i>.tmp`, `combo=i` fixed) and independent `afterok` chains rooted at one
+`combine_tracks` job are implemented and generation-tested, but never run on real data. More importantly,
+only `cell` is a per-combo list so far; `imsize` and each stage's `threshold`/`niter` are still shared
+across combos and don't suit differently-weighted ones — a robust 0.0 combo's higher noise floor sits
+above the shared 0.6mJy stage0 `threshold`, so channels chase noise (N4064 combo0: 21h+ into stage0 with
+600+ "Possible divergence" warnings, vs 5h36m for the robust 1.0 combo at the same `niter=5000`; `niter`
+itself was already reduced and isn't the cause). **Future work**: make `imsize` and per-stage
+`threshold`/`niter` per-combo lists (positional, validated against `len(hi_combos)`, same convention as
+`cell`) before relying on multi-combo runs, sequential or parallel. Not started.
+
 ---
 
 ## Context

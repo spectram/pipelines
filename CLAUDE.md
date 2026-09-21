@@ -279,12 +279,37 @@ there for the *next* stage's `mask='prev'` lookup) — but the *final* pass's ou
 beam-collapsed, velocity-converted science cube (`image_engine.finalize_stage()`'s own export) they were
 derived from, not scattered into the combo directory directly.
 
+**A stage's `threshold` can be left undefined (omitted, or `None`) for any stage after the first** — it is
+then derived by `image_stages.resolve_threshold()` as 1.3x the median of the previous stage's SoFiA noise
+spectrum (`<combo_dir>/stage<N-1>_noise.txt`, written by the masking pass because `default_hi_sofmask.txt`
+sets `output.writeNoise = true`), as a CASA `mJy` quantity. The median is over non-zero channels only —
+SoFiA writes exactly 0 for channels with no data (the empty channels beyond `imspw`, see below; N4064's
+noise file had 345 of them) — and a median rather than a mean so channels with bright line emission don't
+inflate it. Stage 0 must still set one explicitly (nothing precedes it), and a missing noise file raises
+with a pointer to `output.writeNoise` rather than falling back silently. Used by both `hi_image.py` and
+`science_image.py` (shared code), but only exercised against HI cubes; a threshold set explicitly is
+returned untouched, so existing configs are unaffected.
+
 **`[hi_image] cell` can be a per-combo list, not just one shared string.** Different `robust`/`uvtaper`
 weightings in `hi_combos` change the synthesized beam, so a single cell size doesn't suit every combo once
 more than one is configured. `hi_image.py` reads `cell` directly (not via `config_parser.validate_args()`,
 str/int/float/bool only) and accepts either one string (unchanged, shared across every combo) or a list
 with one entry per `hi_combos` entry, indexed positionally by `combo` — errors out if the lengths don't
 match rather than silently misapplying the wrong cell size.
+
+**`hi_combos` is work in progress — only `cell` varies per combo so far; run combos one at a time for
+now (deferred, 2026-09-21).** `imsize` and each stage's `threshold` (and `niter`) are still single values
+shared by every combo, but they don't suit differently-weighted combos either: a robust 0.0 combo has a
+higher noise floor than robust 1.0, so the shared stage0 `threshold` (0.6mJy) sits below its noise and
+each channel chases noise instead of converging (confirmed live on N4064's robust 0.0 combo0: 21h+ into
+stage0 with 600+ "Possible divergence" warnings, vs 5h36m for the robust 1.0 combo at the same `niter`),
+and a finer/coarser `cell` changes how much sky a fixed `imsize` covers. Proper support needs `imsize`
+and per-stage `threshold`/`niter` to become per-combo lists too (same positional-indexing convention as
+`cell`, validated against `len(hi_combos)`). Until then, run multiple combos sequentially (default
+`--combine` behaviour), editing `threshold`/`imsize` by hand between combos as needed. `--parallel_combos`
+exists (independent per-combo config copies and job chains, see `write_combine_jobs_parallel_combos()`)
+but has only been exercised by generation-time tests, never run on real data, and inherits the same
+shared-`threshold`/`imsize` limitation — don't rely on it until the per-combo parameters above land.
 
 **Known gap, not yet fixed: HI cubes can have empty channels beyond the requested `imspw` window.**
 Confirmed live (2026-09-18, N4064): a real `stage1.image` came out with 1263 channels (6.530kHz each,
