@@ -185,10 +185,14 @@ pbband = 'LBand'                  # Which band to use to generate the PB - one o
 # template at runtime (sofia_engine.run_pass()) -- one dict for the masking pass (every
 # non-final stage), one for the final source-finding pass (the last stage). Key namespace
 # is SoFiA's own dotted parameter-file format, not this pipeline's.
+# 'scfind.kernelsXY' is deliberately absent from sofia_final_params: hi_sofia.py always derives it
+# for the final pass from the collapsed common beam (0, half the beam, the full beam, in pixels --
+# fincubes_postprocess.estimate_spatial_kernels()), overwriting any value set here. The masking
+# pass runs before the beam is collapsed, so it keeps the fixed value below.
 sofia_mask_params = {'scfind.kernelsXY': '0, 4, 8', 'reliability.threshold': 0.9,
                       'output.writeCatASCII': False, 'output.writeMoments': True,
                       'output.writeCubelets': False, 'output.writePV': False}
-sofia_final_params = {'scfind.kernelsXY': '0, 4, 8, 10', 'reliability.threshold': 0.95,
+sofia_final_params = {'reliability.threshold': 0.95,
                        'output.writeCatASCII': True, 'output.writeMoments': True,
                        'output.writeCubelets': True, 'output.writePV': True}
 combo = 0                         # Internal: current index into 'hi_combos', advanced by hi_sofia.py
