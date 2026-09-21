@@ -161,7 +161,7 @@ fitspw_vwidth = 800                # Total velocity width (km/s, not half-width)
 hi_combos = [{'robust': 1.0, 'uvtaper': ''}]
 # HI cube imaging stage list -- same shape/semantics as [cont_image]'s 'stages' (see its
 # comment above). Defaults ported from the m2-image-scripts prototype (origin/HI-dev).
-# A stage after the first may omit 'threshold': it is then derived as 1.3x the median RMS in the
+# A stage after the first may omit 'threshold' (or set it to '' / None): it is then derived as 1.3x the median RMS in the
 # previous stage's SoFiA noise spectrum (hi_combo<N>/stage<N-1>_noise.txt, written because
 # default_hi_sofmask.txt sets output.writeNoise = true) -- see image_stages.resolve_threshold().
 stages = [{'mask': None, 'niter': 5000, 'threshold': '0.6mJy'},

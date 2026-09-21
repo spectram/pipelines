@@ -100,7 +100,7 @@ def main(args, taskvals):
 
     mask = image_stages.resolve_mask(stages, stage, imagename_fn)
     threshold = image_stages.resolve_threshold(stages, stage, imagename_fn)
-    if threshold != stages[stage].threshold:
+    if stages[stage].threshold in (None, ''):
         logger.info('Stage {0} threshold not set -- derived {1} (1.3x the previous stage\'s SoFiA noise RMS).'.format(stage, threshold))
 
     outimage = image_engine.run_stage(vis=vis, imagename=imagename, mask=mask,

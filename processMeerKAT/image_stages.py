@@ -43,9 +43,10 @@ class Stage:
     #tclean `niter` for this stage.
     niter: int = 0
     #tclean threshold for this stage: a S/N value if >= 1.0, otherwise a CASA quantity
-    #string (e.g. '0.6mJy'). None (key omitted or explicitly None) means "derive it from
-    #the previous stage's SoFiA noise output" -- see `resolve_threshold()`; not valid for
-    #stage 0, which has no previous stage.
+    #string (e.g. '0.6mJy'). None or '' (key omitted, None, or an empty string -- the
+    #config convention elsewhere for "unset") means "derive it from the previous stage's
+    #SoFiA noise output" -- see `resolve_threshold()`; not valid for stage 0, which has no
+    #previous stage.
     threshold: Any = None
 
 
@@ -86,7 +87,7 @@ def parse_stages(raw_stages):
             raise ValueError("'stages'[{0}]['mask'] must be None or 'prev', got {1!r}.".format(stage_num, stage.mask))
         if stage_num == 0 and stage.mask == 'prev':
             raise ValueError("'stages'[0] (the initial, unmasked dirty image) cannot reference a previous stage ('prev') -- there isn't one.")
-        if stage_num == 0 and stage.threshold is None:
+        if stage_num == 0 and stage.threshold in (None, ''):
             raise ValueError("'stages'[0] must set 'threshold' explicitly -- an undefined threshold is derived from the previous stage's SoFiA noise output, and stage 0 has no previous stage.")
 
         stages.append(stage)
@@ -157,7 +158,7 @@ def resolve_mask(stages, stage, imagename_fn):
 def resolve_threshold(stages, stage, imagename_fn, factor=1.3):
 
     """Resolve the `tclean` threshold for this stage. A threshold set explicitly in the
-    stage list is returned unchanged. An undefined one (None) is derived from the previous
+    stage list is returned unchanged. An undefined one (None or '') is derived from the previous
     stage's SoFiA masking pass: 'factor' times the median of that pass's per-channel noise
     spectrum ('<previous imagename>_noise.txt', written because the shared SoFiA template
     sets `output.writeNoise = true`), as a CASA quantity string in mJy.
@@ -185,7 +186,7 @@ def resolve_threshold(stages, stage, imagename_fn, factor=1.3):
         The explicit threshold, or the derived one as e.g. '0.296mJy'."""
 
     threshold = stages[stage].threshold
-    if threshold is not None:
+    if threshold not in (None, ''):
         return threshold
 
     noise_file = imagename_fn(stage - 1) + '_noise.txt'

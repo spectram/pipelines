@@ -279,7 +279,7 @@ there for the *next* stage's `mask='prev'` lookup) — but the *final* pass's ou
 beam-collapsed, velocity-converted science cube (`image_engine.finalize_stage()`'s own export) they were
 derived from, not scattered into the combo directory directly.
 
-**A stage's `threshold` can be left undefined (omitted, or `None`) for any stage after the first** — it is
+**A stage's `threshold` can be left undefined (omitted, `None`, or `''`) for any stage after the first** — it is
 then derived by `image_stages.resolve_threshold()` as 1.3x the median of the previous stage's SoFiA noise
 spectrum (`<combo_dir>/stage<N-1>_noise.txt`, written by the masking pass because `default_hi_sofmask.txt`
 sets `output.writeNoise = true`), as a CASA `mJy` quantity. The median is over non-zero channels only —
