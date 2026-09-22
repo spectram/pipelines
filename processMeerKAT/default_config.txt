@@ -108,8 +108,9 @@ pbband = 'LBand'                  # Which band to use to generate the PB - one o
 
 [cont_image]                      # Continuum imaging (was [image]/science_image.py's fixed single-pass; Phase 6 of the Pawsey refactor made this stage-list-driven, matching [hi_image]'s shape, and renamed to make explicit it's the continuum-specific counterpart to [hi_image])
 vis = ''                          # Path to MS to image. '' means use this run's own [data] vis (today's behaviour) -- set explicitly to image an independently-provided/concatenated MS instead.
-# Continuum imaging stage list: one dict per stage. 'mask'=None or 'prev' (SoFiA island
-# mask from the immediately preceding stage's image). The last stage is implicitly
+# Continuum imaging stage list: one dict per stage. 'mask'=None, 'prev' (SoFiA island
+# mask from the immediately preceding stage's image), or 'auto-multithresh' (CASA's own
+# automasking, usemask='auto-multithresh' -- see image_engine.run_stage()). The last stage is implicitly
 # "final": gets optional rebin/PB-correction/export, then one final SoFiA source-finding
 # pass; every earlier stage gets a plain SoFiA masking pass feeding the next stage.
 stages = [{'mask': None, 'niter': 10000, 'threshold': '1mJy'},

@@ -106,7 +106,20 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
     #usemask='user' even with no mask -- i.e. an empty user mask, not e.g. 'pb'-mode masking.
     usemask = 'user'
     maskarg = ''
-    if mask != '':
+    if mask == 'auto-multithresh':
+        #image_stages.resolve_mask()'s sentinel for Stage.mask == 'auto-multithresh' -- not
+        #a real file path, so skip the FITS-import branch below entirely. CASA's own
+        #automasking algorithm derives/refines its mask internally each major cycle; no
+        #mask= file needed. Confirmed needed live (N4064, 2026-09-22): an unmasked blind
+        #stage0 clean's S+C finder pass found ~equal positive/negative candidate counts
+        #(2819 vs 2924) across the whole field, too noise-dominated for SoFiA's reliability
+        #step to call anything reliable even though real sources were visible by eye --
+        #auto-multithresh constrains cleaning to likely-real-emission regions instead of the
+        #full blind field, which should both find fewer noise-level candidates and reduce
+        #the earlier "chases noise across the whole field" divergence pattern that drove
+        #stage0's threshold up to 1.0mJy in the first place.
+        usemask = 'auto-multithresh'
+    elif mask != '':
         #SoFiA writes a FITS island mask missing the frequency/Stokes axes tclean's
         #mask= needs -- import it to a CASA image with those axes restored, mirroring
         #bookkeeping.get_selfcal_args()'s identical usermask-import pattern. defaultaxes=True

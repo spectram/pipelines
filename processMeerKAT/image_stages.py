@@ -16,6 +16,9 @@ stages = [
     {'mask': 'prev', 'niter': 1500000, 'threshold': '0.24mJy'},
 ]
 ```
+A stage's `mask` can also be `'auto-multithresh'`, letting CASA's own automasking algorithm
+generate/refine the mask internally each major cycle instead of a user-supplied region mask
+(useful for e.g. stage 0, which has no previous stage to reference via `'prev'`).
 The last stage in the list is implicitly "final": after its `tclean`, the engine (see
 `image_engine.py`) runs optional rebin -> optional PB-correction -> export, then a final
 SoFiA source-finding pass -- see `is_final()`. Every non-final stage instead gets a plain
@@ -27,8 +30,11 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 #Valid values for a stage's 'mask' relative reference. None means "don't use one"; 'prev'
-#means "use the SoFiA mask produced from the immediately preceding stage's image".
-_VALID_REFS = (None, 'prev')
+#means "use the SoFiA mask produced from the immediately preceding stage's image";
+#'auto-multithresh' means "let tclean's own auto-multithresh algorithm generate/refine its
+#mask internally each major cycle" (CASA's usemask='auto-multithresh' -- see
+#image_engine.run_stage()), rather than a user-supplied region mask.
+_VALID_REFS = (None, 'prev', 'auto-multithresh')
 
 
 @dataclass(frozen=True)
@@ -36,9 +42,9 @@ class Stage:
 
     """One imaging stage's fully-resolved parameters."""
 
-    #Relative reference to the mask this stage's `tclean` call should use: None (no mask)
-    #or 'prev' (the SoFiA island mask produced from the immediately preceding stage's
-    #image -- see `resolve_mask()`).
+    #Relative reference to the mask this stage's `tclean` call should use: None (no mask),
+    #'prev' (the SoFiA island mask produced from the immediately preceding stage's image),
+    #or 'auto-multithresh' (CASA's own automasking, see `resolve_mask()`).
     mask: Optional[str] = None
     #tclean `niter` for this stage.
     niter: int = 0
@@ -84,7 +90,7 @@ def parse_stages(raw_stages):
         stage = Stage(**raw)
 
         if stage.mask not in _VALID_REFS:
-            raise ValueError("'stages'[{0}]['mask'] must be None or 'prev', got {1!r}.".format(stage_num, stage.mask))
+            raise ValueError("'stages'[{0}]['mask'] must be None, 'prev', or 'auto-multithresh', got {1!r}.".format(stage_num, stage.mask))
         if stage_num == 0 and stage.mask == 'prev':
             raise ValueError("'stages'[0] (the initial, unmasked dirty image) cannot reference a previous stage ('prev') -- there isn't one.")
         if stage_num == 0 and stage.threshold in (None, ''):
@@ -148,10 +154,14 @@ def resolve_mask(stages, stage, imagename_fn):
     mask : str
         Path to the previous stage's SoFiA island mask FITS file (matching
         `aux_scripts/run_sofia.py`'s `'{0}_mask.fits'.format(imagename)` naming
-        convention), or '' if this stage uses no mask."""
+        convention), the literal string 'auto-multithresh' (not a real path --
+        `image_engine.run_stage()` special-cases it into `usemask='auto-multithresh'`
+        rather than importing it as a file), or '' if this stage uses no mask."""
 
     if stages[stage].mask == 'prev':
         return imagename_fn(stage - 1) + '_mask.fits'
+    if stages[stage].mask == 'auto-multithresh':
+        return 'auto-multithresh'
     return ''
 
 

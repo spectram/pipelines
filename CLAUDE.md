@@ -311,6 +311,17 @@ exists (independent per-combo config copies and job chains, see `write_combine_j
 but has only been exercised by generation-time tests, never run on real data, and inherits the same
 shared-`threshold`/`imsize` limitation — don't rely on it until the per-combo parameters above land.
 
+**A stage's `mask` can be `'auto-multithresh'`, not just `None`/`'prev'`** — lets CASA's own automasking
+algorithm derive/refine its mask internally each major cycle (`usemask='auto-multithresh'`), instead of no
+mask or a user-supplied SoFiA island mask. `image_stages.resolve_mask()` returns the literal string
+`'auto-multithresh'` as a sentinel (not a real path); `image_engine.run_stage()` special-cases it into
+`usemask` rather than trying to import it as a FITS file. Added 2026-09-22 specifically for stage 0 (which
+has no previous stage to reference via `'prev'`, and previously only supported a fully blind `None` clean):
+a real blind stage0 (N4064, robust 0.0) found 2819 positive vs 2924 negative S+C candidates across the
+whole 2048×2048 field — too noise-dominated for SoFiA's reliability step to call anything reliable, even
+though real sources were visible by eye — the hope is that constraining cleaning to likely-real-emission
+regions finds fewer noise-level candidates. Not yet verified against a real run.
+
 **Known gap, not yet fixed: HI cubes can have empty channels beyond the requested `imspw` window.**
 Confirmed live (2026-09-18, N4064): a real `stage1.image` came out with 1263 channels (6.530kHz each,
 matching `chanbin=2`) spanning 1409.161–1417.403MHz — visibly wider than, and offset from, any `imspw`
