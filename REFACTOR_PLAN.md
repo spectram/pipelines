@@ -765,9 +765,19 @@ itself was already reduced and isn't the cause). **Future work**: make `imsize` 
 `threshold`/`niter` per-combo lists (positional, validated against `len(hi_combos)`, same convention as
 `cell`) before relying on multi-combo runs, sequential or parallel. Not started.
 
-**Done (2026-09-25): combo output directories named from their weighting.** Details in `CLAUDE.md`'s HI-imaging section. Combo output directories are `hi_combo_r<robust>[_t<uvtaper>]` (`hi_combo_r1`, `hi_combo_r0`, `hi_combo_rm0p5`, `hi_combo_r0_t40arcsec`) via `image_stages.combo_dirname()`/`combo_dirnames()` in both `hi_image.py` and `hi_sofia.py`, instead of the position-based `hi_combo<N>`; two combos with the same robust/uvtaper are rejected. Existing `hi_combo<N>` directories aren't migrated.
-
-*SIP figures after the final SoFiA pass (also 2026-09-25).* New `sip_postprocess.py`, called from `hi_sofia.py` after each combo's final pass (`[hi_image] sip`, default on): runs sofia-image-pipeline with `-o` on the final export, using SIP's own `-m` when ImageMagick is present and a Pillow port of `combine_images.py` when it isn't. Best-effort by design (never fails the step; a survey overlay that can't be fetched falls back to offline). It runs in the SoFiA container, which already has SIP's dependencies and `magick`; only the pure-Python `sip` package needed adding (`SIP_PATH`). See `profiling_notes.md` for the compute-node survey-download hang this works around.
+**Done (2026-09-25): combo directories named from their weighting; SIP figures after the final SoFiA pass;
+new `[hi_image]` defaults.** Details in `CLAUDE.md`'s HI-imaging section and `profiling_notes.md`'s latest
+N4064 section. (1) Combo output directories are `hi_combo_r<robust>[_t<uvtaper>]` (`hi_combo_r1`,
+`hi_combo_r0`, `hi_combo_rm0p5`, `hi_combo_r0_t40arcsec`) via `image_stages.combo_dirname()`/`combo_dirnames()`
+in both `hi_image.py` and `hi_sofia.py`, instead of the position-based `hi_combo<N>`; two combos with the same
+robust/uvtaper are rejected. Existing `hi_combo<N>` directories aren't migrated. (2) New `sip_postprocess.py`,
+called from `hi_sofia.py` after each combo's final pass (`[hi_image] sip`, default on): runs
+sofia-image-pipeline with `-o` on the final export, using SIP's own `-m` when ImageMagick is present and a Pillow
+port of `combine_images.py` when it isn't. Best-effort by design (never fails the step; survey overlay retried
+offline). It runs in the SoFiA container, which already has SIP's dependencies and `magick`; only the pure-Python
+`sip` package needed adding (`SIP_PATH`). (3) `default_config.txt`'s `[hi_image]`: stage 0 `mask` is
+`'auto-multithresh'`, `nmajor` is 15, stage 1's `threshold` is `''` (derived). The hung-`hi_image`-on-skip MPI
+shutdown bug (see `profiling_notes.md`) is still unfixed.
 
 ---
 

@@ -264,7 +264,7 @@ on one HI cube, entirely wasted on every manual resume before this existed, sinc
 - All three checks are pure `os.path.exists()`, same "clear stale output to force a redo" convention as
   every other idempotency check in this pipeline: if imaging params (mask, weighting, robust,
   wprojplanes, ...) changed since a prior attempt, delete the relevant `<imagename>.*` first.
-- `[hi_image] nmajor` (default `-1`, unlimited, threaded through to `tclean()`) caps major cycles per
+- `[hi_image] nmajor` (`default_config.txt` ships `15`; `-1` is unlimited and is still the fallback for a config with no `nmajor` key at all, threaded through to `tclean()`) caps major cycles per
   call. Confirmed live: once most/all channels in a cube converge, `tclean` has no stopping criterion for
   "nothing left to clean" — it keeps re-gridding the *entire* dataset every major cycle for zero benefit,
   indistinguishable from real progress without reading individual `SDAlgorithmBase::deconvolve` log lines
@@ -334,7 +334,7 @@ exists (independent per-combo config copies and job chains, see `write_combine_j
 but has only been exercised by generation-time tests, never run on real data, and inherits the same
 shared-`threshold`/`imsize` limitation — don't rely on it until the per-combo parameters above land.
 
-**A stage's `mask` can be `'auto-multithresh'`, not just `None`/`'prev'`** — lets CASA's own automasking
+**A stage's `mask` can be `'auto-multithresh'`, not just `None`/`'prev'`** (and it is now `default_config.txt`'s stage 0, with `nmajor = 15` and stage 1's `threshold = ''`, i.e. derived) — lets CASA's own automasking
 algorithm derive/refine its mask internally each major cycle (`usemask='auto-multithresh'`), instead of no
 mask or a user-supplied SoFiA island mask. `image_stages.resolve_mask()` returns the literal string
 `'auto-multithresh'` as a sentinel (not a real path); `image_engine.run_stage()` special-cases it into
