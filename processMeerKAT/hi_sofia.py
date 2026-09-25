@@ -26,6 +26,7 @@ import bookkeeping
 import image_stages
 import sofia_engine
 import fincubes_postprocess
+import sip_postprocess
 import processMeerKAT
 
 import logging
@@ -101,6 +102,14 @@ def main(args, taskvals):
         stage += 1
 
     config_parser.overwrite_config(args['config'], conf_dict={'combo': combo, 'stage': stage}, conf_sec='hi_image', sec_comment='# Internal variables for pipeline execution')
+
+    #Figures come last, after the pipeline state has advanced: they need the final pass's
+    #catalogue/moments/cubelets, are best-effort (see sip_postprocess.run_sip_safe(), which never
+    #raises), and must not be able to hold up or fail a step whose real outputs are already written.
+    if final and va(taskvals, 'hi_image', 'sip', bool, default=True):
+        sip_postprocess.run_sip_safe(os.path.join(sofia_output_dir, mask_basename + '_cat.xml'), input_fits,
+            sip_path=va(taskvals, 'hi_image', 'sip_path', str, default=processMeerKAT.SIP_PATH),
+            surveys=va(taskvals, 'hi_image', 'sip_surveys', str, default=''))
 
 
 if __name__ == '__main__':

@@ -299,6 +299,20 @@ resolve the directory through `image_stages.combo_dirnames(hi_combos)`, which ra
 one (same robust and uvtaper). Directories from before this convention (`hi_combo0`, ...) need renaming by hand
 to match if a later step should find them — nothing migrates them.
 
+**After each combo's final SoFiA pass, `hi_sofia.py` runs sofia-image-pipeline (SIP) for per-source figures**
+(`sip_postprocess.py`; `[hi_image] sip = True`, `sip_surveys = ''`). It runs *after* the pipeline state has
+advanced and is best-effort — `run_sip_safe()` never raises, so a missing install, no network or a failed figure
+step logs a warning and the step still succeeds. It needs SIP's `sip` package importable: `SIP_PATH`
+(`processMeerKAT.py`, `containers/sip_pkgs`) is prepended to a child interpreter's `PYTHONPATH`;
+create it with `pip install --no-deps --target <dir> sofia-image-pipeline` (pure Python — `SOFIA_CONTAINER`
+already provides astropy/matplotlib/astroquery/pvextractor/Pillow, and ImageMagick). SIP runs with `-o` pointing
+at the final export (its header carries the common beam, needed for full-band spectra); the DSS2 Blue overlay
+needs network access (compute nodes can reach SkyView) and a failed survey run is retried once with `-s none`.
+For the combined per-source figure it uses SIP's own `-m` when `magick` (or an ImageMagick `convert`) is found,
+and otherwise — or if `-m` didn't produce one — a Pillow port of SIP's `combine_images.py`
+(`sip_postprocess.combine_figures_pillow()`, same layout/branches, same 800kB size rule). SIP is HI-specific,
+so `cont_sofia.py` doesn't use it.
+
 **`[hi_image] cell` can be a per-combo list, not just one shared string.** Different `robust`/`uvtaper`
 weightings in `hi_combos` change the synthesized beam, so a single cell size doesn't suit every combo once
 more than one is configured. `hi_image.py` reads `cell` directly (not via `config_parser.validate_args()`,

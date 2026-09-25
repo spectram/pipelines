@@ -182,6 +182,8 @@ rebin_factor = [2, 2, 1]          # imrebin() factor, only used when rebin=True
 pb_correct = False                # Apply katbeam PB-correction to the final stage's cube before export?
 pbthreshold = 0.1                 # Threshold below which to mask the PB for PB correction
 pbband = 'LBand'                  # Which band to use to generate the PB - one of "LBand" "SBand" or "UHF"
+sip = True                        # After each combo's final SoFiA pass, run sofia-image-pipeline (SIP) on its catalogue for per-source figures (moment maps, survey overlay, spectra, PV plots). Best-effort: skipped with a warning if SIP isn't installed (see SIP_PATH in processMeerKAT.py), never fails the step. Combined per-source figures use SIP's own -m when ImageMagick is available, a Pillow port otherwise -- see sip_postprocess.py.
+sip_surveys = ''                  # SIP '-s' survey(s) for the overlay ('' = SIP's default, DSS2 Blue; 'none' = offline, no overlay). A survey run that fails (e.g. no network) is retried offline automatically.
 # SoFiA parameter overrides applied on top of the shared default_hi_sofmask.txt base
 # template at runtime (sofia_engine.run_pass()) -- one dict for the masking pass (every
 # non-final stage), one for the final source-finding pass (the last stage). Key namespace

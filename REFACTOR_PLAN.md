@@ -767,6 +767,8 @@ itself was already reduced and isn't the cause). **Future work**: make `imsize` 
 
 **Done (2026-09-25): combo output directories named from their weighting.** Details in `CLAUDE.md`'s HI-imaging section. Combo output directories are `hi_combo_r<robust>[_t<uvtaper>]` (`hi_combo_r1`, `hi_combo_r0`, `hi_combo_rm0p5`, `hi_combo_r0_t40arcsec`) via `image_stages.combo_dirname()`/`combo_dirnames()` in both `hi_image.py` and `hi_sofia.py`, instead of the position-based `hi_combo<N>`; two combos with the same robust/uvtaper are rejected. Existing `hi_combo<N>` directories aren't migrated.
 
+*SIP figures after the final SoFiA pass (also 2026-09-25).* New `sip_postprocess.py`, called from `hi_sofia.py` after each combo's final pass (`[hi_image] sip`, default on): runs sofia-image-pipeline with `-o` on the final export, using SIP's own `-m` when ImageMagick is present and a Pillow port of `combine_images.py` when it isn't. Best-effort by design (never fails the step; a survey overlay that can't be fetched falls back to offline). It runs in the SoFiA container, which already has SIP's dependencies and `magick`; only the pure-Python `sip` package needed adding (`SIP_PATH`). See `profiling_notes.md` for the compute-node survey-download hang this works around.
+
 ---
 
 ## Context

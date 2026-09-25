@@ -711,3 +711,27 @@ cube. The DSS2 Blue overlay is fetched from SkyView, so it needs network (fine o
 `-m` needs ImageMagick, which isn't in `mktenv`, on the host (no module), or in the stale `idianext.sif`;
 `sip_combine_pillow.py` (local, in the M2 directory) ports SIP's non-`freq`-branch layout to Pillow instead.
 
+### SIP inside the pipeline (2026-09-25): container facts and a compute-node hang
+
+`hi_sofia.py` now runs SIP after each combo's final pass (`sip_postprocess.py`). What testing on real
+compute nodes turned up:
+
+- **The SoFiA container is the right place to run it.** It already has astropy, matplotlib, astroquery,
+  pvextractor, Pillow and requests, and ships ImageMagick at `/usr/local/bin/magick` — only the pure-Python
+  `sip` package was missing (Python 3.10 there; installed with `pip install --no-deps --target
+  containers/sip_pkgs sofia-image-pipeline` and put on a child interpreter's `PYTHONPATH`). `idianext.sif` has
+  none of these (no astroquery/pvextractor/xmltodict/ImageMagick), consistent with the stale-build finding above.
+- **SIP's survey download hangs on compute nodes.** With the default DSS2 Blue overlay the job sat with no log
+  output for 12+ minutes until cancelled. A stack dump (`faulthandler`, 90s) put it in
+  `astroquery/skyview/core.py: survey_dict` → `requests` → `socket.readinto`: the very first request of the
+  download (the survey list) has no timeout and blocks forever — even though a plain `requests.get` of a SkyView
+  `query.pl` URL from the same node returned HTTP 200 in 1.2s and a raw socket connect succeeds. It works fine
+  from the login node (a few seconds per source). So `run_sip()` first runs that same astroquery call in a
+  child with a 45s limit and, if it doesn't finish, runs SIP offline (`-s none`, no survey overlay) instead of
+  waiting; a survey run that fails or times out is also retried once offline.
+- **Verified end to end** on real outputs: in the SoFiA container on a compute node (ImageMagick present →
+  SIP's `-m`; pre-flight timed out after 45s → offline; ~4–5 min for 2 sources with `-o`), and on the login node
+  with no ImageMagick (survey overlay retrieved → SIP's figures + the Pillow combination). SIP's `-o` full-band
+  spectra also need the SoFiA mask cube (`<base>_mask.fits`) in the working directory; without it SIP logs an
+  ERROR, still exits 0, and skips `specfull`/`specboth` — so the per-source Pillow combination skips that
+  source with a warning rather than failing the rest.

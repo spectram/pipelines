@@ -131,6 +131,11 @@ DEFAULT_CLUSTER_KWARGS = {
 }
 CONTAINER = '/software/projects/pawsey1164/ssankar/containers/idianext.sif'
 SOFIA_CONTAINER = '/software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif'
+#Directory holding the `sip` (sofia-image-pipeline) package, added to PYTHONPATH by
+#sip_postprocess.py when it isn't already importable -- SOFIA_CONTAINER has everything else SIP
+#needs (astropy, matplotlib, astroquery, pvextractor, Pillow, ImageMagick). Pure Python, so
+#`pip install --no-deps --target <this dir> sofia-image-pipeline` is all it takes.
+SIP_PATH = '/software/projects/pawsey1164/ssankar/containers/sip_pkgs'
 
 #idianext.sif's venv Python is linked against a spack-built OpenSSL newer than the container's
 #base-OS OpenSSL; without LD_PRELOAD forcing the venv's OpenSSL to load first, `import ssl`
