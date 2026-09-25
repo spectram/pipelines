@@ -147,7 +147,7 @@ def resolve_mask(stages, stage, imagename_fn):
         Current imaging stage index.
     imagename_fn : callable
         Given a stage index, returns that stage's base imagename (no extension) -- e.g.
-        `hi_image.py`'s per-combo `lambda s: 'hi_combo{0}/stage{1}'.format(combo,s)`.
+        `hi_image.py`'s per-combo `lambda s: '<combo_dir>/stage{0}'.format(s)`.
 
     Returns:
     --------
@@ -216,3 +216,64 @@ def resolve_threshold(stages, stage, imagename_fn, factor=1.3):
 
     rms = statistics.median(values)
     return '{0:.4g}mJy'.format(factor * rms * 1e3)
+
+
+def _format_robust(robust):
+
+    """Filename-safe form of a Briggs robust value: '1' for 1.0, '0p5' for 0.5, 'm0p5' for -0.5."""
+
+    robust = float(robust)
+    text = str(int(robust)) if robust == int(robust) else repr(robust)
+    return text.replace('-', 'm').replace('.', 'p')
+
+
+def combo_dirname(combo):
+
+    """Output directory name for one '[hi_image] hi_combos' entry, derived from its weighting
+    rather than its position in the list: 'hi_combo_r<robust>' plus '_t<uvtaper>' when a taper is
+    set -- e.g. {'robust': 1.0, 'uvtaper': ''} -> 'hi_combo_r1', {'robust': -0.5, 'uvtaper': ''} ->
+    'hi_combo_rm0p5', {'robust': 0.0, 'uvtaper': '40arcsec'} -> 'hi_combo_r0_t40arcsec'. Position-
+    based names ('hi_combo0', 'hi_combo1', ...) silently changed meaning whenever a combo was
+    added, removed or reordered in the list.
+
+    Arguments:
+    ----------
+    combo : dict
+        One 'hi_combos' entry, with 'robust' and 'uvtaper' keys.
+
+    Returns:
+    --------
+    dirname : str"""
+
+    name = 'hi_combo_r' + _format_robust(combo['robust'])
+
+    taper = combo['uvtaper']
+    if isinstance(taper, (list, tuple)):
+        taper = '_'.join(str(t) for t in taper)
+    taper = ''.join(c for c in str(taper or '') if c.isalnum() or c in '.-_').replace('.', 'p').replace('-', 'm')
+    if taper:
+        name += '_t' + taper
+
+    return name
+
+
+def combo_dirnames(hi_combos):
+
+    """`combo_dirname()` for every entry, raising if two entries would share a directory (same
+    robust and uvtaper -- their outputs would overwrite each other).
+
+    Arguments:
+    ----------
+    hi_combos : list (of dict)
+
+    Returns:
+    --------
+    dirnames : list (of str)
+        One per entry, same order."""
+
+    dirnames = [combo_dirname(c) for c in hi_combos]
+    duplicates = sorted({d for d in dirnames if dirnames.count(d) > 1})
+    if duplicates:
+        raise ValueError("'hi_combos' entries share output director{0} {1} -- each combo needs a distinct robust/uvtaper.".format(
+            'ies' if len(duplicates) > 1 else 'y', duplicates))
+    return dirnames

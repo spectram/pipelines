@@ -18,6 +18,7 @@ don't conflate them. Shares its template-copy/patch-keys/shell-out mechanism wit
 #stage's export similarly comes from image_engine.finalize_stage(), also on the CASA side.
 
 import os
+import sys
 
 import config_parser
 from config_parser import validate_args as va
@@ -40,7 +41,12 @@ def main(args, taskvals):
     combo = va(taskvals, 'hi_image', 'combo', int, default=0)
     stage = va(taskvals, 'hi_image', 'stage', int, default=0)
 
-    combo_dir = 'hi_combo{0}'.format(combo)
+    hi_combos = taskvals['hi_image']['hi_combos']
+    try:
+        combo_dir = image_stages.combo_dirnames(hi_combos)[combo]
+    except (ValueError, IndexError) as err:
+        logger.error("Can't resolve the output directory for '[hi_image] combo'={0}: {1}".format(combo, err))
+        sys.exit(1)
     imagename_fn = lambda s: os.path.join(combo_dir, 'stage{0}'.format(s))
     imagename = imagename_fn(stage)
 
@@ -52,7 +58,7 @@ def main(args, taskvals):
         input_fits = imagename + '.fits'
 
     #output.directory + output.filename together determine where SoFiA writes its outputs --
-    #directory handles the 'hi_combo<N>/' prefix, filename is the basename only (matching
+    #directory handles the 'hi_combo_r<robust>/' prefix, filename is the basename only (matching
     #image_stages.resolve_mask()'s '<imagename_fn(stage)>_mask.fits' expectation, which
     #already includes that same prefix). The masking pass's mask.fits must stay directly in
     #'combo_dir' -- resolve_mask() hard-codes that exact path for the *next* stage's own

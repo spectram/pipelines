@@ -9,8 +9,8 @@ masking/final SoFiA passes and advances the [hi_image] combo/stage state) the sa
 
 Images multiple robust/uvtaper weighting combinations ([hi_image] hi_combos, one dict per
 combination) end-to-end and independently -- no mask-sharing across combos, see
-REFACTOR_PLAN.md's Phase 6 addendum. Each combo gets its own 'hi_combo<N>/' output
-directory."""
+REFACTOR_PLAN.md's Phase 6 addendum. Each combo gets its own output directory named from its
+weighting ('hi_combo_r<robust>[_t<uvtaper>]/', see image_stages.combo_dirname())."""
 
 import os
 import sys
@@ -93,7 +93,11 @@ def main(args, taskvals):
     logger.info('Imaging combo {0}/{1} (robust={2}, uvtaper={3!r}), stage {4}/{5}.'.format(
         combo, len(hi_combos)-1, robust, uvtaper, stage, len(stages)-1))
 
-    combo_dir = 'hi_combo{0}'.format(combo)
+    try:
+        combo_dir = image_stages.combo_dirnames(hi_combos)[combo]
+    except ValueError as err:
+        logger.error(str(err))
+        sys.exit(1)
     os.makedirs(combo_dir, exist_ok=True)
     imagename_fn = lambda s: os.path.join(combo_dir, 'stage{0}'.format(s))
     imagename = imagename_fn(stage)

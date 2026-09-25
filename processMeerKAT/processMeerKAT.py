@@ -1540,10 +1540,10 @@ def write_parallel_combo_configs(config):
     unlike spw_split(), there's no need to trim 'hi_combos'/'cell' down to a single entry per
     copy, since fixing 'combo=i' against the *unchanged, full* list already selects the right
     entry (hi_image.py/hi_sofia.py's own 'hi_combos[combo]'/'cell[combo]' indexing) -- and
-    fixing 'combo=i' rather than resetting to 0 means 'hi_image.py's own
-    'combo_dir = "hi_combo{0}".format(combo)' naming lands on exactly the same 'hi_combo<i>/'
-    directory a sequential (non-parallel) run of this same combo would have used, with zero
-    changes needed to hi_image.py/hi_sofia.py themselves -- they can't tell the difference
+    fixing 'combo=i' rather than resetting to 0 means hi_image.py's own combo directory name
+    (image_stages.combo_dirname(), derived from that combo's robust/uvtaper) lands on exactly
+    the same directory a sequential (non-parallel) run of this same combo would have used, with
+    zero changes needed to hi_image.py/hi_sofia.py themselves -- they can't tell the difference
     between "the i-th combo in an N-combo sequential chain" and "the only combo this particular
     config copy will ever point at."
 

@@ -37,7 +37,7 @@ def run_stage(vis, imagename, mask, niter, threshold, imsize, cell, robust, uvta
         Input MeasurementSet.
     imagename : str
         Base imagename for this stage (no extension) -- caller resolves per-stage/per-combo
-        naming (e.g. `hi_image.py`'s `hi_combo{c}/stage{s}`).
+        naming (e.g. `hi_image.py`'s `hi_combo_r<robust>/stage{s}`).
     mask : str
         Path to a mask FITS file (from `image_stages.resolve_mask()`), or ''.
     niter, threshold : from this stage's ``image_stages.Stage``.

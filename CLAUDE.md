@@ -290,6 +290,15 @@ with a pointer to `output.writeNoise` rather than falling back silently. Used by
 `science_image.py` (shared code), but only exercised against HI cubes; a threshold set explicitly is
 returned untouched, so existing configs are unaffected.
 
+**Each combo's output directory is named from its weighting, not its position.** `image_stages.combo_dirname()`
+gives `hi_combo_r<robust>` plus `_t<uvtaper>` when a taper is set — `{'robust': 1.0}` → `hi_combo_r1`,
+`{'robust': 0.0}` → `hi_combo_r0`, `{'robust': -0.5}` → `hi_combo_rm0p5` (`m` for minus, `p` for the decimal
+point), `{'robust': 0.0, 'uvtaper': '40arcsec'}` → `hi_combo_r0_t40arcsec`. Position-based `hi_combo<N>` names
+silently changed meaning whenever a combo was added, removed or reordered. `hi_image.py` and `hi_sofia.py` both
+resolve the directory through `image_stages.combo_dirnames(hi_combos)`, which raises if two entries would share
+one (same robust and uvtaper). Directories from before this convention (`hi_combo0`, ...) need renaming by hand
+to match if a later step should find them — nothing migrates them.
+
 **`[hi_image] cell` can be a per-combo list, not just one shared string.** Different `robust`/`uvtaper`
 weightings in `hi_combos` change the synthesized beam, so a single cell size doesn't suit every combo once
 more than one is configured. `hi_image.py` reads `cell` directly (not via `config_parser.validate_args()`,

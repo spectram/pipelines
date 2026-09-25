@@ -765,6 +765,8 @@ itself was already reduced and isn't the cause). **Future work**: make `imsize` 
 `threshold`/`niter` per-combo lists (positional, validated against `len(hi_combos)`, same convention as
 `cell`) before relying on multi-combo runs, sequential or parallel. Not started.
 
+**Done (2026-09-25): combo output directories named from their weighting.** Details in `CLAUDE.md`'s HI-imaging section. Combo output directories are `hi_combo_r<robust>[_t<uvtaper>]` (`hi_combo_r1`, `hi_combo_r0`, `hi_combo_rm0p5`, `hi_combo_r0_t40arcsec`) via `image_stages.combo_dirname()`/`combo_dirnames()` in both `hi_image.py` and `hi_sofia.py`, instead of the position-based `hi_combo<N>`; two combos with the same robust/uvtaper are rejected. Existing `hi_combo<N>` directories aren't migrated.
+
 ---
 
 ## Context
