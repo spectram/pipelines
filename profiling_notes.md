@@ -624,3 +624,90 @@ guidance: always pass `start`/`width`/`nchan` explicitly rather than relying on 
 + frame conversion defaults). Not fixed — diagnosis only, at the user's explicit direction; the
 fix would be computing `start`/`width`/`nchan` from `imspw`'s bounds and the mode's real channel
 width and threading them through `image_engine.run_stage()`'s `tclean()` call.
+
+## N4064 — single-combo (robust 0.0) run to a 2-source catalogue: masking, thresholds, restore-only stage 1, native post-processing
+
+Continues the N4064 sections above (2026-09-21 to 2026-09-25). One combo (`robust=0.0`, `cell=2.0arcsec`),
+`imspw='*:1414~1419MHz'`, `[hi_image] nmajor=-1` throughout, `hi_image` on 2 nodes/8 tasks-per-node/230GB.
+Job IDs and wall times are from `sacct`.
+
+### Timings
+
+| Job | What | Result |
+|---|---|---|
+| 49497554 | stage0, unmasked (`mask=None`), threshold 0.6mJy (3-combo config, combo0) | TIMEOUT, 24h00m01s |
+| 49773478 | stage0, unmasked, threshold **1.0mJy** | COMPLETED, 18h13m56s |
+| 49773480 | `hi_sofia` masking pass on that stage0 | **FAILED**, 4m48s ("No reliable sources found") |
+| 49846741 | stage0, **`auto-multithresh`**, threshold 0.6mJy | COMPLETED, 21h22m34s |
+| 49846742 | `hi_sofia` masking pass | COMPLETED, 10m55s (2 reliable sources) |
+| 49846743 | stage1 deep clean (`niter=1,500,000`, threshold derived 0.3611mJy) | TIMEOUT, 24h00m18s |
+| 49952912 | stage1 restore-only (`niter=0`, reused residual/model) | FAILED, 59m59s — but `stage1.image` was written |
+| 49970254 | finishing `hi_image` (skip `tclean`, rebin/export/beam/velocity) | work done in ~7min, then **hung**; cancelled at ~6.5h |
+| 49985318 | native-resolution post-processing (local `srun`, 32 cores/56GB) | COMPLETED, 2m01s |
+| 49985449 / 49986880 | final `hi_sofia` at `reliability.threshold` 0.95 / 0.9 | COMPLETED, 5m26s / 5m38s (36 cores/64GB) |
+
+Native `stage0.fits`/`stage1.image.fits` are 12.8GB (2048×2048×765; 765 channels × 6.530kHz matches the
+5MHz `imspw` window, so the empty-channel padding described above was *not* seen in this run — the
+different window/centre means that doesn't refute it). The masking pass on that cube fit in 32GB.
+
+### Findings
+
+**Blind stage0 noise-chases at robust 0.0; `auto-multithresh` fixes it.** The unmasked stage0 at 0.6mJy
+timed out with 600+ "Possible divergence" warnings (peak residuals ~2.6–3mJy against a 0.6mJy threshold; the
+robust 1.0 combo needed 5h36m at the same `niter`). Raising the threshold to 1.0mJy let it finish (18h14m),
+but the masking pass then found 2819 positive vs 2924 negative S+C candidates and SoFiA's reliability step
+called none reliable, though real sources were visible by eye. With `mask='auto-multithresh'` and 0.6mJy,
+stage0 logged **zero** divergence warnings, and the masking pass found 2438 positive/2558 negative
+candidates with **2 reliable** — enough for stage1's `mask='prev'`.
+
+**A misleading SoFiA number, for next time.** The masking log's `Global RMS: 9.994e-01` looked ~3600× too
+high against the real ~0.28mJy/beam, but is expected: `scaleNoise` divides every channel by its own noise
+*before* that line prints, so it is ~1 by construction. Measuring the FITS directly gave per-plane σ of
+2.6–3.3e-4 Jy/beam (median 2.78e-4), matching a manual look. The FITS header has no scalar `BMAJ`/`BMIN`
+for a non-final stage (per-plane beams live in a `BEAMS` table SoFiA doesn't read), hence its "beam area of
+1 px" warning, which affects `reliability.minSNR`, not the RMS.
+
+**Stage 1 derived threshold and convergence.** The derived threshold was 0.3611mJy (1.3× the previous
+stage's median non-zero noise). At ~21.7h, about 71% of recently sampled channel batches reported
+`iters=0->0, Reached cyclethreshold`; the rest were still cleaning. With `nmajor=-1` it hit the 24h wall,
+and the residual/model on disk were judged converged, so cleaning was stopped there (below).
+
+**Restore-only run: `niter=0` with `calcres=False` does write the image.** In CASA's `task_tclean`, that
+combination skips deconvolution and still runs `restoreImages()`. It crashed at teardown with
+`RuntimeError: Parallel transport layer not initialized` (`releasempi`): with no gridding the parallel
+imager was never set up, though `tclean` tried to release it. The image was already on disk (per-channel
+σ 2.6–3.0e-4 Jy/beam at channels 100/380/600, i.e. not cleaned into the noise).
+
+**Why the finishing `hi_image` hung (inferred from logs + `casampi` source; the stuck processes weren't
+inspected).** `hi_image.py` runs as a 16-task MPI job and imports `casampi` at the top, so ranks 1–15 sit
+in a worker loop. The only thing that stops them at exit is the `atexit → stop_services` hook registered
+in `casampi/MPICommandClient.py:139`, and that client is only created by `MPIInterface()` inside `tclean`
+(`task_tclean.py:361`). With `stage1.image` already present, `run_stage()` returned early, `tclean` never
+ran, no hook was registered, and rank 0 exited while the workers waited forever. The log simply ends
+after the last script line — no error. A latent bug: any `hi_image.py` re-run for a stage whose image
+already exists will hang. Likely fix (not written or tested): instantiate `MPIInterface()` at startup or on
+the skip path.
+
+**Native vs rebinned beam sampling.** Median beam 11.642″×6.898″ (per-plane major 11.63–11.77″). At 2″
+pixels that is **22.7 pixels/beam** (5.82×3.45 px FWHM); after the `[2,2,1]` rebin (4″ pixels)
+**5.7 pixels/beam** (2.91×1.72 px — the minor axis is under-sampled). The final pass's estimated spatial
+kernels are `0, 2, 5.82` native vs `0, 1, 2.91` rebinned. Rebinned export was 3.2GB vs 12.8GB native.
+
+**Final catalogue: 2 sources only at `reliability.threshold=0.9`.** On the native cube the final pass found
+1473 positive/1549 negative candidates; at 0.95 one source survived, at **0.9 two** — SoFiA
+J120254.43+184507.8 (465 px) and J120411.10+182637.2 (389 px, the NGC4064 target at the field centre;
+W20 ≈ 189km/s, SNR ≈ 38.7, z_HI ≈ 0.00313 from SIP's figures). `myconfig.txt`'s `sofia_final_params` now has 0.9.
+
+**Resume gotchas found live.** (1) After the final `hi_sofia`, `.config.tmp` advances to `combo=1, stage=0`
+(out of range for one combo); a standalone re-run needs `combo=0, stage=1` restored first or it goes looking
+for `hi_combo1`. (2) A crashed job leaves `[run] continue = False`, which makes any resubmit skip itself.
+
+### `sofia-image-pipeline` (SIP)
+
+Installed 1.4.0 into `mktenv` (Python 3.11; pulls in astroquery, pvextractor, etc.) and ran it on
+`stage1_cat.xml` with `-o stage1.image.fits` (full-band spectra need the native cube; the beam is in its
+header) — ~5m40s total: ~1 min for source 1 and ~4.5 min for source 2, dominated by reading the 12.8GB
+cube. The DSS2 Blue overlay is fetched from SkyView, so it needs network (fine on the login node).
+`-m` needs ImageMagick, which isn't in `mktenv`, on the host (no module), or in the stale `idianext.sif`;
+`sip_combine_pillow.py` (local, in the M2 directory) ports SIP's non-`freq`-branch layout to Pillow instead.
+
