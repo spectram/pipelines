@@ -1,0 +1,903 @@
+# Incident cases for evaluating an LLM-assisted operator of this pipeline (DRAFT v0, for review).
+#
+# Each case is one real event from this project, written so it can be posed as:
+#   INPUT  = symptom + evidence (+ context)     -> what the operator sees
+#   OUTPUT = diagnosis + action                 -> what a good operator concludes and does
+# and graded against `rubric` (the points a correct answer must hit) and `wrong_actions`
+# (tempting responses that would waste time or damage data).
+#
+# Fields
+#   id            stable slug
+#   category      transient | resource | config | code-bug | container | data-quality | benign | misread | behaviour
+#   stage         pipeline step involved
+#   symptom       what is observed first (the prompt)
+#   evidence      concrete observables (log lines, counts, sacct facts) -- the retrievable clues
+#   context       run/config facts needed to reach the answer
+#   root_cause    accepted diagnosis
+#   action        correct response
+#   wrong_actions plausible but incorrect responses
+#   rubric        checklist a grader can tick
+#   hypothesis_trail  (optional) the wrong or unconfirmed turns on the way to the answer -- graders should
+#                 reward NOT repeating them; a good operator tests them cheaply before committing.
+#   human_correction  (optional) where the user redirected the operator, and how.
+#   verified      live      = fix confirmed on a real run
+#                 inferred  = reasoned from logs/source, not confirmed by experiment
+#                 open      = cause or fix not established
+#   source        where the write-up lives (commit or profiling_notes.md section)
+#   raw_logs      paths of real logs that could be replayed as input (M2 = /scratch/pawsey1164/ssankar/N4064/M2)
+#                 -- absent where only the write-up survives; those cases need a log excerpt captured
+#                 before they can be used as real (not paraphrased) input.
+#
+# Draft status: written from profiling_notes.md, commit messages and this session's transcript.
+# Nothing here has been re-checked against the raw logs; entries marked TODO-REVIEW need your call.
+
+cases:
+
+# ------------------------------------------------------------------ MPI / scheduling / state
+
+- id: pmi-bootstrap-failure-at-startup
+  category: transient
+  stage: hi_image (any srun MPI step)
+  symptom: "hi_image job FAILED (exit 143) 5 minutes after start; dependent jobs CANCELLED; no hi_combo output written."
+  evidence:
+    - "stderr: '_pmi_mmap_tmp: Warning bootstrap barrier failed: num_syncd=7, pes_this_node=8, timeout=180 secs'"
+    - "stderr: 'MPIR_pmi_init(110): PMI_Init returned 1' then 'Fatal error in PMPI_Init_thread'"
+    - "srun: 'Terminating StepId=... DUE TO TASK FAILURE'; every task Terminated"
+    - "no output from hi_image.py itself in the .out/.err"
+  context: "Same sbatch and config had run fine before. .config.tmp unchanged (combo/stage/continue=True)."
+  root_cause: "One rank failed to complete Cray PMI bootstrap within 180 s, so MPI never initialised. Happens before any pipeline code runs. Occurred on two different nodes (nid001034, then nid002499), so not attributable to one bad node."
+  action: "Confirm .config.tmp is unchanged, resubmit the same job(s). Optionally --exclude the failing node, but do not expect that to prevent recurrence."
+  wrong_actions:
+    - "Edit config or code (nothing pipeline-side failed)"
+    - "Reset the whole chain / rerun submit_pipeline.sh"
+    - "Conclude the node named in the log is the only bad one"
+  rubric:
+    - "Identifies failure as MPI/PMI init, before hi_image.py ran"
+    - "Says no pipeline state was changed, so resubmit is safe"
+    - "Resubmits only the failed step and its dependants, not the full chain"
+  verified: live   # first failure: resubmitted with --exclude, stage 0 then ran 19h37m to completion. second failure: resubmit pending at time of writing.
+  source: "session 2026-09-25/27; jobs 49991294, 49997165"
+  raw_logs: ["M2/logs/hi_image-49991294.err", "M2/logs/hi_image-49997165.err"]
+
+- id: hi-image-hangs-when-tclean-skipped
+  category: code-bug
+  stage: hi_image (finishing pass, image already exists)
+  symptom: "Finishing hi_image job did its work in ~7 min (rebin, export, beam collapse, velocity conversion) then sat with no output until cancelled at ~6.5 h."
+  evidence:
+    - "log simply ends after the last script line; no error"
+    - "stage image already present so image_engine.run_stage() returned before calling tclean"
+  context: "hi_image.py is a 16-task MPI job and imports casampi at the top; ranks 1-15 sit in a worker loop."
+  root_cause: "casampi's atexit stop_services hook is registered only when MPIInterface() is created inside tclean (task_tclean.py:361). Skipping tclean means the hook never exists, rank 0 exits and the workers wait forever. Any hi_image re-run for a stage whose image exists will hang."
+  action: "Cancel the job (work already done). Proper fix not yet written: instantiate MPIInterface() at startup or on the skip path."
+  wrong_actions:
+    - "Wait longer"
+    - "Re-run with more memory/walltime"
+    - "Assume the export failed and redo it"
+  rubric:
+    - "Notes the productive work finished early and the tail is a hang, not slowness"
+    - "Ties hang to skipped tclean / missing atexit MPI shutdown"
+    - "Cancels rather than waits"
+  verified: inferred  # from logs + casampi source; stuck processes were not inspected; fix untested
+  source: "profiling_notes.md 'Why the finishing hi_image hung'; job 49970254"
+  raw_logs: []
+
+- id: restore-only-tclean-crash-at-teardown
+  category: code-bug
+  stage: hi_image (stage 1, niter=0, calcres=False)
+  symptom: "hi_image (restore-only, submitted to write stage1.image) FAILED after ~1 h with RuntimeError: Parallel transport layer not initialized."
+  evidence:
+    - "traceback from releasempi at teardown"
+    - "stage1.image did not exist beforehand: this restore-only run was submitted to produce it, and tclean finished the restore (wrote stage1.image at 19:30) before the crash"
+    - "the decision not to clean further was the user's, from inspecting the residual and model (judged converged) before submitting"
+    - "afterwards, per-channel rms sampled on the restored image: 2.6-3.0e-4 Jy/beam at channels 100/380/600, matching the ~0.28 mJy/beam the user had measured -- a consistency check, not the basis for the decision"
+  context: "Deliberately ran niter=0 with reused residual/model to trigger restore only."
+  root_cause: "With no gridding the parallel imager was never set up, but tclean still tried to release it. task_tclean still runs restoreImages() for niter=0 + calcres=False, so the image was written before the crash."
+  action: "Treat as success for the image; check the .image exists and is sane, then proceed to post-processing. Do not rerun tclean."
+  wrong_actions:
+    - "Rerun the stage from scratch"
+    - "Treat FAILED state as meaning no image"
+  rubric:
+    - "Recognises the crash is at teardown, after the image was written"
+    - "Verifies the image on disk rather than trusting job state"
+  verified: live
+  source: "profiling_notes.md 'Restore-only run'; job 49952912"
+  raw_logs: []
+
+- id: config-tmp-state-after-final-sofia
+  category: config
+  stage: hi_sofia -> any standalone rerun
+  symptom: "Standalone rerun of hi_sofia/hi_image looks for a directory or stage that does not exist (e.g. hi_combo1), or the resubmitted job exits immediately doing nothing."
+  evidence:
+    - ".config.tmp shows combo=1, stage=0 for a one-combo config, after the final hi_sofia"
+    - "after a crashed job, [run] continue = False"
+  context: "Runtime state lives in .config.tmp, which pipeline scripts advance; -R/submit_pipeline.sh reset it from myconfig.txt."
+  root_cause: "The final hi_sofia advances combo/stage past the end; a crash leaves continue=False, which makes every later script skip itself."
+  action: "Diff myconfig.txt against .config.tmp first. Restore combo/stage to the values wanted and set continue=True before resubmitting; do not rerun submit_pipeline.sh."
+  wrong_actions:
+    - "Rerun full submit_pipeline.sh (resets and restarts the whole chain)"
+    - "Regenerate scripts with -R without restoring progressed fields"
+  rubric:
+    - "Checks .config.tmp vs myconfig.txt before acting"
+    - "Restores combo, stage and continue explicitly"
+  verified: live
+  source: "profiling_notes.md 'Resume gotchas'; CLAUDE.md 'Resuming a partially-run pipeline'"
+  raw_logs: []
+
+# ------------------------------------------------------------------ tclean convergence / masking
+
+- id: blind-stage0-noise-chasing
+  category: config
+  stage: hi_image stage 0 (mask=None)
+  symptom: "Stage 0 hits the 24 h walltime (TIMEOUT) though it was still iterating (advancing counters on two checks 20 s apart)."
+  evidence:
+    - "600+ 'Possible divergence. Peak residual increased by 10% from minimum.' warnings; every channel batch logs it"
+    - "peak residuals 2.6-3 mJy against threshold 0.6 mJy at robust 0.0; residual rms already at/below threshold"
+    - "robust 1.0 combo at the same niter finished in 5h36m"
+  context: "1263 or 765 channels, almost all pure noise; unmasked blind clean; threshold near the noise floor."
+  root_cause: "Threshold sits at or below the noise floor and nothing restricts cleaning to real emission, so each channel chases noise. Robust 0.0 has a higher noise floor than robust 1.0, so the shared threshold suits one combo and not the other."
+  action: "Investigate the divergence first (measure the residual rms, the threshold and the mask), then lay out the options for the user to choose: lower niter, raise the threshold, or usemask='auto-multithresh'. On this data the user first chose a blind clean at niter=5000 (finished in 5h36m for robust 1.0), then auto-multithresh for robust 0.0. A higher threshold alone finished but gave an unusable mask (next case)."
+  wrong_actions:
+    - "Just extend walltime"
+    - "Add nodes/ranks (not the lever)"
+    - "Raise threshold and assume the result is fine"
+  rubric:
+    - "Reads divergence warnings + threshold-vs-rms as noise chasing, not a stall"
+    - "Distinguishes still-iterating from hung"
+    - "Measures before proposing (residual rms vs threshold, mask coverage)"
+    - "Offers niter / threshold / auto-multithresh as options and leaves the choice to the user"
+  hypothesis_trail:
+    - "Operator misread 'chans=10' in the tclean log as the cube's channel count. It is tclean's per-batch chunk size; the real cube has 1263 channels. Found by measuring the image shape."
+    - "Operator advised raising the threshold to ~3-4 mJy (robust 0.0). The threshold later used (1.0 mJy) ran to completion but produced a mask SoFiA could not use."
+  human_correction: "User asked to 'investigate the divergence first before deciding on new parameters', then chose the blind niter=5000 run themselves, and later chose auto-multithresh."
+  verified: live   # auto-multithresh: zero divergence warnings, 21h22m, 2 reliable sources
+  source: "profiling_notes.md 'Blind stage0 noise-chases'; jobs 49497554, 49846741; transcript 2026-09-13, 2026-09-21"
+  raw_logs: []
+
+- id: masking-pass-no-reliable-sources
+  category: data-quality
+  stage: hi_sofia masking pass
+  symptom: "hi_sofia FAILED after ~5 min with 'No reliable sources found' even though real sources are visible by eye in the cube."
+  evidence:
+    - "2819 positive vs 2924 negative S+C candidates over the whole field"
+    - "positive count is not meaningfully above negative, so reliability is ~0 for all"
+  context: "Stage 0 was unmasked at threshold 1.0 mJy (raised to avoid timeout); noise-dominated cube."
+  root_cause: "SoFiA's reliability step compares positive vs negative candidate counts; a noise-dominated cleaned cube gives near-equal counts so nothing is reliable."
+  action: "Report the numbers (positive vs negative candidate counts, measured noise) and ask the user to inspect the stage 0 image and decide: a different threshold/niter combination, auto-multithresh, or deliberately keeping the blind clean (a blind tclean can be exactly what the user wants). Loosening reliability.threshold is a last resort, and the resulting sources need checking."
+  wrong_actions:
+    - "Treat as a SoFiA crash and rerun unchanged"
+    - "Silently drop reliability to 0"
+    - "Change stage 0's masking/threshold on its own initiative"
+  rubric:
+    - "Explains reliability as positive-vs-negative source counts"
+    - "Points at the stage 0 image (noise-dominated) as where the problem originates"
+    - "Asks the user to inspect the stage 0 image and choose threshold/niter or auto-multithresh, rather than deciding for them"
+  hypothesis_trail:
+    - "H1 (operator, unconfirmed): 345 of 1263 channels are exact zeros (the known empty-channel gap) and break the reliability model. Never confirmed."
+    - "H2 (operator, WRONG): 'Global RMS 9.994e-01' vs the real 0.28 mJy/beam signals an RMS mismatch. Invalid comparison, see sofia-global-rms-looks-wrong."
+    - "Accepted: negatives ~equal positives, so nothing is reliable."
+  human_correction: "User inspected the cube directly ('the sources are there; RMS ~0.28 mJy/beam; beam 11x6 arcsec'), which ruled out a data problem and redirected the diagnosis to the reliability step."
+  verified: live
+  source: "profiling_notes.md N4064 single-combo; job 49773480; transcript 2026-09-22"
+  raw_logs: []
+
+- id: stage1-zero-iterations-timeout
+  category: config
+  stage: hi_image stage 1 (mask='prev', niter=1.5M, nmajor=-1)
+  symptom: "Stage 1 TIMEOUT at 24 h with only 7 major cycles and no useful progress."
+  evidence:
+    - "all 9,102 SDAlgorithmBase::deconvolve lines read 'iters=0->0 [0], model=0->0, peakres=0->0, Reached cyclethreshold'"
+    - "previous stage's mask contained only 3 detections in the whole cube"
+    - "an early misread counted per-channel-batch 'Run multiscale minor-cycle' lines as major cycles (209 vs the real 7)"
+  context: "nmajor=-1 (no cap)."
+  root_cause: "With almost no masked area the residual inside is already below threshold, so every minor cycle does nothing. tclean has no 'nothing left to clean' stopping criterion, so it re-grids the full dataset every major cycle until walltime."
+  action: "Cap major cycles (nmajor=15, now default) and fix the sparse mask upstream."
+  wrong_actions:
+    - "Increase walltime or memory"
+    - "Count minor-cycle lines as major cycles"
+  rubric:
+    - "Reads iters=0->0 everywhere as 'no work', not 'slow'"
+    - "Counts major cycles correctly"
+    - "Recommends nmajor cap"
+  hypothesis_trail:
+    - "H1 (operator, WRONG): each major cycle is 'structurally too expensive'; stage 0 'did 209 major cycles' vs stage 1's 7. The 209 counted per-channel-batch minor-cycle lines; stage 0 really had 2 major cycles of ~2.5 h, comparable to stage 1's ~1h50m."
+    - "H2 (user): stage 0 and 1 share one directory -- could file placement explain it? Operator checked: lfs getstripe shows identical progressive striping for both; ruled out."
+    - "H3 (user): 'how come this re-gridding did not affect stage 0?' exposed the miscount and led to grepping every deconvolve line -- all iters=0->0."
+  human_correction: "Two questions from the user (directory layout, why stage 0 was unaffected) broke a wrong 'too slow per cycle' story; 'bingo, exactly what I thought' on the zero-iterations finding."
+  verified: live   # nmajor cap added afterwards as default; not yet shown to end a stage gracefully on a real run -- TODO-REVIEW after hi_combo_r1 stage 1
+  source: "profiling_notes.md 'hi_image stage1 ... zero minor-cycle iterations'; job 48714725"
+  raw_logs: []
+
+- id: stage1-converged-but-hits-walltime
+  category: config
+  stage: hi_image stage 1 with derived threshold
+  symptom: "Stage 1 (derived threshold 0.3611 mJy) still running at 21.7 h and will hit the 24 h wall."
+  evidence:
+    - "~71% of recently sampled channel batches report iters=0->0, Reached cyclethreshold; rest still cleaning"
+    - "residual/model on disk look converged; per-channel sigma 2.6-3.0e-4 Jy/beam"
+  context: "nmajor=-1. User does not want to clean into the noise."
+  root_cause: "Most channels converged; remaining cycles buy little. No cap, so the job cannot finish gracefully."
+  action: "Stop cleaning, restore from the existing residual/model (niter=0, calcres=False) to write the image, then post-process. Set nmajor for future runs."
+  wrong_actions:
+    - "Let it run to TIMEOUT and lose the export"
+    - "Restart stage 1 from scratch"
+  rubric:
+    - "Judges convergence from deconvolve lines and residual stats"
+    - "Uses restore-only path and keeps the existing model"
+  verified: live
+  source: "profiling_notes.md 'Stage 1 derived threshold and convergence'; jobs 49846743, 49952912"
+  raw_logs: []
+
+- id: sofia-kernel-channel-unit-mismatch
+  category: config
+  stage: hi_sofia (masking / final)
+  symptom: "SoFiA finds only 3 sources in a deep 4-track cube (a single track had found 5)."
+  evidence:
+    - "kernelsZ=[0,3,5,7], radiusZ=minSizeZ=1 (defaults tuned for ~5.6 km/s/channel)"
+    - "this mode gives ~1.4 km/s/channel: native 3.265 kHz (~0.689 km/s) x chanbin=2"
+    - "rescaled 4x (kernelsZ [0,11,19,27], radiusZ/minSizeZ 4) found 18 including the known target at its catalogued position"
+  context: "Correlator mode 32K_NE107M, chanbin=2."
+  root_cause: "SoFiA spectral kernel/linker parameters are in channel units; the shipped defaults are exactly 4x too narrow for this channel width."
+  action: "Scale kernelsZ (round to odd) and radiusZ/minSizeZ by the channel-width ratio; now applied per correlator mode at -B time. A config built by --combine from a stale template needs it by hand."
+  wrong_actions:
+    - "Lower reliability/SNR thresholds"
+    - "Conclude the cube has few sources"
+  rubric:
+    - "Recognises channel-unit parameters vs real channel width"
+    - "Computes the 4x ratio from chanwidth x chanbin"
+  verified: live
+  source: "profiling_notes.md 'Root cause of the sparse (3-detection) mask'; job 48771810"
+  raw_logs: []
+
+- id: sofia-global-rms-looks-wrong
+  category: misread
+  stage: hi_sofia (log inspection)
+  symptom: "Masking log prints 'Global RMS: 9.994e-01', about 3600x the real ~0.28 mJy/beam. Suspected bug."
+  evidence:
+    - "measured per-plane sigma from the FITS: 2.6-3.3e-4 Jy/beam (median 2.78e-4)"
+    - "'Assuming beam area of 1 px => reliability.minSNR may be wrong' also printed"
+  context: "Non-final stage; noise scaling enabled."
+  root_cause: "scaleNoise divides each channel by its own noise before that line prints, so it is ~1 by construction -- not a bug. The beam warning is separate: non-final stage FITS lacks scalar BMAJ/BMIN (per-plane beams live in a BEAMS table SoFiA does not read); it affects reliability.minSNR only."
+  action: "No action on the RMS. Check real noise directly from the data. Beam warning is expected until the final stage stamps a median beam."
+  wrong_actions:
+    - "Report a SoFiA noise-estimation bug"
+    - "Change parameters to 'fix' the RMS"
+  rubric:
+    - "Explains why the number is ~1"
+    - "Separates the RMS print from the beam-area warning"
+  verified: live   # first diagnosis was wrong and had to be corrected in-session
+  source: "profiling_notes.md 'A misleading SoFiA number'"
+  raw_logs: []
+
+- id: sofia-oom-undersized-memory
+  category: resource
+  stage: hi_sofia
+  symptom: "Standalone SoFiA test on the 4-track cube OOM'd at 32 GB."
+  evidence:
+    - "production run needed ~129 GB for the same cube size even with narrower kernels"
+    - "rerun at 140 GB completed in 8m39s"
+  context: "One full-cube-sized smoothed copy is made per kernel combination."
+  root_cause: "Memory tracks cube size and number of kernel combinations, not kernel width. 32 GB was far below need."
+  action: "Request memory from cube size (~130-140 GB for this cube), not from a smaller test's footprint."
+  wrong_actions:
+    - "Reduce kernels to save memory"
+  rubric:
+    - "Sizes memory from cube volume"
+  verified: live
+  source: "profiling_notes.md 'Standalone test'"
+  raw_logs: []
+
+# ------------------------------------------------------------------ resources / performance
+
+- id: selfcal-part1-oom
+  category: resource
+  stage: selfcal_part1 (tclean, MPI, --exclusive)
+  symptom: "selfcal_part1 OOM at loop 0 (niter=10000), both at 1 node/16 tasks (230 GB) and 2 nodes/16 tasks-per-node."
+  evidence:
+    - "dies right after SynthesisDeconvolver::setupDeconvolution during PSF/weight-density gather"
+    - "~260 GB/node at last sample against a 230 GB budget"
+    - "2-node run OOM'd on one specific node"
+  context: "wprojplanes=512, scales=[0,5,10,15]."
+  root_cause: "casampi splits only visibilities across ranks; image-side buffers (PSF, weight density, multiscale, w-kernels) are replicated on every rank. SLURM --mem is per node, so ranks-per-node is the lever, not node count."
+  action: "Lower ranks per node (8) and reduce wprojplanes 512->128 and scales to [0,5,10]; measured ~200-207 GiB/node, 10-13% headroom, flat across niter."
+  wrong_actions:
+    - "Add more nodes at the same ranks-per-node"
+    - "Assume memory grows with niter"
+  rubric:
+    - "States image buffers are replicated per rank"
+    - "Names ranks-per-node as the control"
+  verified: live
+  source: "profiling_notes.md 'selfcal_part1 OOM investigation'"
+  raw_logs: []
+
+- id: hi-image-cycle-rate-depends-on-channel-count
+  category: resource
+  stage: hi_image (cube)
+  symptom: "One run finished ~23 major cycles in 24 h; an earlier run over the same frequency window completed only 5 and hit the walltime."
+  evidence:
+    - "63 min/cycle at chanbin=2 (919 channels, 'Subcubes: 2', 353 GB required vs 184 GB available)"
+    - "~4.8 h/cycle at chanbin=1 (~2,100 channels); a full-band chanbin=1 log showed 'Subcubes: 13'"
+  context: "Same imspw, wprojplanes=128."
+  root_cause: "CASA's memory estimator scales ~linearly with channel count; when it exceeds the budget each major cycle splits into sequential subcube passes, so cost compounds (2.3x channels -> ~4.6x cycle time)."
+  action: "Expect chanbin/imspw to dominate cost. Narrow imspw or increase chanbin before adding ranks."
+  wrong_actions:
+    - "Add MPI ranks (serial vs parallel gap fell to ~2% at large chunks)"
+  rubric:
+    - "Reads 'Required memory ... Subcubes: N' as the driver"
+  verified: inferred  # exact subcube count for the chanbin=1 narrowed run was interpolated, not measured
+  source: "profiling_notes.md 'hi_image (cube mode): the same chanbin factor...'; jobs 47820395, 48228936"
+  raw_logs: []
+
+- id: memory-estimator-warning-not-fatal
+  category: benign
+  stage: hi_image (start of run)
+  symptom: "CASA logs 'Required memory 401983440 kB (~402GB) vs Available mem 241172480 kB (~241GB)'. Should the job be cancelled?"
+  evidence:
+    - "1 node / 230 GB; full-scope imspw ~21 MHz, wprojplanes=256"
+  context: "CASA can auto-chunk into subcubes."
+  root_cause: "Not an error: CASA fits the budget by splitting into subcubes. It is a signal the job is expensive (see cycle-rate case), not that it will fail."
+  action: "Do not cancel for this line alone; consider narrowing imspw/wprojplanes for time, not to avoid a crash."
+  wrong_actions:
+    - "Cancel and request 402 GB"
+  rubric:
+    - "Treats it as a cost signal, not a failure"
+  verified: live
+  source: "profiling_notes.md 'HI cube imaging ... 402GB memory warning'"
+  raw_logs: []
+
+# ------------------------------------------------------------------ silent failures / code bugs
+
+- id: partition-empty-mms-numpy-scalar
+  category: code-bug
+  stage: partition.py -> validate_input.py
+  symptom: "validate_input.py fails opening a table that does not exist; partition.py showed COMPLETED (exit 0)."
+  evidence:
+    - "remote ranks: NameError: name 'np' is not defined"
+    - "call text serialised as 'nthreads=np.int64(2)'"
+  context: "msmd.ncorrforpol() returns a numpy scalar, passed straight to mstransform(nthreads=)."
+  root_cause: "casampi ships the call as text using NumPy 2 scalar repr, which is eval'd on remote ranks with no numpy import; mstransform never raised, so an empty MMS was produced silently."
+  action: "Cast to plain int. When a step fails on 'missing data', check the previous step's output actually exists and is non-empty, even if it reported success."
+  wrong_actions:
+    - "Debug validate_input.py"
+  rubric:
+    - "Looks one step upstream of the failure"
+    - "Names numpy-scalar repr over MPI"
+  verified: live
+  source: "af68f63"
+  raw_logs: []
+
+- id: srun-default-three-tasks-races-config
+  category: code-bug
+  stage: read_ms.py -B (ad hoc srun)
+  symptom: "-B intermittently crashes with KeyError: 'crosscal' or writes a corrupted myconfig.txt."
+  evidence:
+    - "a bare srun with no --ntasks launches 3 tasks on Setonix"
+    - "three tasks each read-modify-write myconfig.txt via overwrite_config()"
+  context: "Site default, never set by the pipeline."
+  root_cause: "Three redundant concurrent copies race on the same file."
+  action: "Always pass --ntasks explicitly to ad hoc srun calls."
+  wrong_actions:
+    - "Retry until it passes"
+  rubric:
+    - "Identifies concurrent writers to one file"
+  verified: live
+  source: "98ee6c3"
+  raw_logs: []
+
+- id: adhoc-srun-hangs-on-mpi-init
+  category: code-bug
+  stage: read_ms.py -B, set_sky_model.py
+  symptom: "-B hangs at ~95% CPU for the whole walltime after its own work has finished."
+  evidence:
+    - "two read_ms.py processes spinning until walltime kill"
+    - "-B completes in ~35 s once fixed"
+  context: "OMPI_COMM_WORLD_RANK was injected for every invocation."
+  root_cause: "The injected rank env var makes casampi attempt MPI init even for non-MPI ad hoc calls; outside an sbatch task allocation there is nothing to join."
+  action: "Inject the MPI env only for real MPI jobs (mpi flag in write_command())."
+  wrong_actions:
+    - "Raise walltime"
+  rubric:
+    - "Ties hang to casampi MPI init in a non-MPI context"
+  verified: live
+  source: "d9c317c"
+  raw_logs: []
+
+- id: selfcal-part1-imaging-weight-not-selected
+  category: code-bug
+  stage: selfcal_part1 (parallel tclean)
+  symptom: "Crash on loop 0->1: RuntimeError: Imaging weight calculation is requested for a data that was not selected."
+  evidence:
+    - "persisted after forcing calcpsf=True; then raised from makepsf() instead of executemajorcycle()"
+    - "stale imagename.psf/.sumwt symlinks from an earlier crashed run pointing at another image's weights"
+  context: "Introduced by a PSF-reuse optimisation (calcpsf=False)."
+  root_cause: "Two layers: (1) calcpsf=False skips per-engine data selection that the parallel major cycle needs; (2) leftover psf/sumwt from the removed optimisation made restart=True register inconsistent weights even with calcpsf=True."
+  action: "Always recompute the PSF in a parallel major cycle (~30 s vs an 11+ min cycle), and delete stale per-loop products before retry."
+  wrong_actions:
+    - "Stop after fixing only layer 1"
+  rubric:
+    - "Finds both causes, including the stale files"
+  verified: live
+  source: "0013ebe, a062602"
+  raw_logs: []
+  note: "Contrast with hi_image, where calcpsf=False reuse IS valid (cube mode, image_engine) -- a good discrimination test."
+
+- id: selfcal-part2-clobbers-sofia-mask
+  category: code-bug
+  stage: selfcal_part2 (final loop with run_sofia mask)
+  symptom: "Final selfcal loop uses a mask that looks like PyBDSF's, not the SoFiA mask that run_sofia.py produced. No error."
+  evidence:
+    - "pixmask overwritten by makemask(...output=pixmask) in mask_image()"
+  context: "Loop >= nloops with usermask set."
+  root_cause: "mask_image() rebuilt pixmask from PyBDSF's island mask unconditionally, discarding SoFiA's."
+  action: "Skip the rebuild when this loop's mask already comes from SoFiA."
+  wrong_actions:
+    - "Re-run run_sofia.py"
+  rubric:
+    - "Notices mask provenance, not just presence"
+  verified: live
+  source: "a72ab55"
+  raw_logs: []
+
+- id: configparser-inline-bracket-comment
+  category: code-bug
+  stage: config parsing (-R)
+  symptom: "[hi_image]/[cont_image]/[cluster] job-count expansion and per-cluster overrides silently do nothing on real -B-built configs."
+  evidence:
+    - "has_section('hi_image') returns False; section name parsed as the whole header line"
+    - "golden_diff.sh stayed clean (its fixture headers have no inline comments)"
+  context: "default_config.txt section headers carry '# ... ]' comments."
+  root_cause: "configparser's default section regex is greedy and matches to the LAST ']' on the line."
+  action: "inline_comment_prefixes=('#',). Lesson: a clean golden_diff does not cover code paths its fixture never exercises."
+  wrong_actions:
+    - "Trust golden_diff.sh alone"
+  rubric:
+    - "Names the greedy header regex"
+    - "Notes why the fixture missed it"
+  verified: live
+  source: "06810b8"
+  raw_logs: []
+
+- id: stale-postcal-scripts-constant
+  category: code-bug
+  stage: -B config build
+  symptom: "-B -H builds a config whose postcal_scripts lacks hi_image.py/hi_sofia.py/cont_sofia.py."
+  evidence:
+    - "default_config.txt lists them; the built config does not"
+  context: "Argparse default constant POSTCAL_SCRIPTS overwrote the template's list after copy."
+  root_cause: "Module constant fell out of sync with default_config.txt when Phase 6 added the scripts."
+  action: "Sync the constant. Diff the built config against the template when a key goes missing."
+  wrong_actions:
+    - "Hand-edit each built config"
+  rubric:
+    - "Looks for a second source of truth that overwrites the template"
+  verified: live
+  source: "1fac16c"
+  raw_logs: []
+
+- id: spw-split-drops-1mhz-gap
+  category: code-bug
+  stage: spw_split (nspw>1)
+  symptom: "Per-SPW crosscal covers 1404-1409/1409-1414/1414-1419/1420-1425 MHz; 1419-1420 MHz is never calibrated."
+  evidence:
+    - "interval = int((1425-1404)/4) = int(5.25) = 5, truncated"
+  context: "Whole-number MHz bounds from an int() clamp fallback."
+  root_cause: "get_spw_bounds() chose int vs float arithmetic by whether the string contained a decimal point, not by intent."
+  action: "Decide arithmetic from meaning (frequency vs channel index)."
+  wrong_actions:
+    - "Treat as cosmetic rounding"
+  rubric:
+    - "Checks that adjacent bins are contiguous"
+  verified: live
+  source: "ce861a5"
+  raw_logs: []
+
+- id: uvcontsub-fitspec-parse-error
+  category: code-bug
+  stage: uvcontsub
+  symptom: "Every uvcontsub job across P1_test/P2/P3/P4 fails identically: RuntimeError: Error trying to parse SPW: *:1405.717~1413.8218MHz, stoi."
+  evidence:
+    - "same error on all four tracks"
+  context: "Auto-fitspw feature had just been added."
+  root_cause: "uvcontsub's fitspec has its own parser that rejects the '*' wildcard and needs numeric SPW IDs; those IDs only exist on the MS at runtime, so they cannot be computed at -B time."
+  action: "Compute per-SPW IDs at runtime from the actual MS."
+  wrong_actions:
+    - "Copy flagdata's spw syntax"
+  rubric:
+    - "Notes fitspec syntax differs from flagdata spw"
+  verified: live
+  source: "64cb0d0"
+  raw_logs: []
+
+- id: virtualconcat-keepcopy-strands-data
+  category: code-bug
+  stage: combine_tracks.py
+  symptom: "combine job fails in 15 s with FileNotFoundError; a track's 459 GB .contsub is missing from its directory."
+  evidence:
+    - "data moved into a concat_tmp_* staging dir before the crash"
+    - "restore path built as tempdir+'/'+elvis (full path concatenated)"
+  context: "keepcopy=True, vis paths containing '/'."
+  root_cause: "CASA's backup logic moves to tempdir/<basename> but restores from tempdir+full original path; only works for bare filenames."
+  action: "Move the data back after confirming byte-identical size; use disposable local copies and keepcopy=False."
+  wrong_actions:
+    - "Rerun immediately"
+    - "Assume the data is lost"
+  rubric:
+    - "Locates the moved data before doing anything else"
+    - "Avoids keepcopy=True with paths"
+  verified: live
+  source: "profiling_notes.md 'virtualconcat keepcopy'; CLAUDE.md; job 48601306"
+  raw_logs: []
+
+- id: correlator-mode-misidentified-from-nchan
+  category: code-bug
+  stage: read_ms.py -B
+  symptom: "Correlator mode not identified / wrong resource defaults for an MS covering a window of the band."
+  evidence:
+    - "MS is 6127 channels / 20 MHz, not the mode's full 32768 / 107 MHz"
+    - "18-scan MS produced a '1 node / 9 tasks' recommendation (targeted nscans/2)"
+  context: "MeerKAT archived only a window around the target line."
+  root_cause: "Matching on (nchan, bandwidth) fails for spectral subsets; channel width is the invariant. Scan-based task count should be one rank per scan."
+  action: "Identify by native ChanWid; target nscans."
+  wrong_actions:
+    - "Add per-MS special cases"
+  rubric:
+    - "Picks the invariant property"
+  verified: live
+  source: "profiling_notes.md 'Two real config-generation bugs'"
+  raw_logs: []
+
+# ------------------------------------------------------------------ container / environment
+
+- id: sofia-container-glibc-with-mpi-module
+  category: container
+  stage: SoFiA container (any)
+  symptom: "SoFiA container fails to run at all; even 'echo' and 'python3' fail inside it."
+  evidence:
+    - "'GLIBC_2.38 not found' for every dynamically linked binary"
+  context: "singularity/4.1.0-mpi module; Ilifu-built Ubuntu 22.04 container."
+  root_cause: "The -mpi module bind-mounts Cray fabric/Lustre host libraries built against a newer glibc than the container's."
+  action: "Use singularity/4.1.0-nohost (SoFiA is non-MPI)."
+  wrong_actions:
+    - "Rebuild the container"
+  rubric:
+    - "Ties failure to host-library bind mounts"
+  verified: live
+  source: "9a7ad26"
+  raw_logs: []
+
+- id: casampi-toolsi-nameerror
+  category: container
+  stage: quick_tclean (mfs) under MPI
+  symptom: "tclean(specmode='mfs') fails on every rank: NameError: name 'toolsi' is not defined."
+  evidence:
+    - "casampi 0.5.9 in the container"
+  context: "Continuous/mfs tclean only."
+  root_cause: "casampi 0.5.9's server runs dispatched commands with bare exec(code) (no shared globals), so a variable from one command is gone for the next. Fixed upstream in casampi 0.6.0 (CAS-14733)."
+  action: "Override with casampi 0.6.0 via PYTHONPATH (container is stale)."
+  wrong_actions:
+    - "Change the imaging parameters"
+  rubric:
+    - "Names casampi version as the cause"
+  verified: live
+  source: "9947d3c"
+  raw_logs: []
+
+- id: ld-library-path-env-clobbers-cray-mpi
+  category: container
+  stage: selfcal_part2 (PyBDSF mask export)
+  symptom: "ImportError: libcasa_python3.so.8: cannot open shared object file."
+  evidence:
+    - "the library exists at /opt/casacore/lib in idianext.sif"
+    - "site sets SINGULARITYENV_LD_LIBRARY_PATH with Cray fabric paths ending in a literal '$LD_LIBRARY_PATH'"
+  context: "Fixing it like the other env vars (--env) would replace the site's value."
+  root_cause: "Library not on the default search path. `--env LD_LIBRARY_PATH=` replaces rather than composes, silently dropping Cray MPI paths."
+  action: "Prepend via a host-side export of SINGULARITYENV_LD_LIBRARY_PATH, not --env."
+  wrong_actions:
+    - "--env LD_LIBRARY_PATH=/opt/casacore/lib"
+  rubric:
+    - "Knows --env replaces the site value"
+  verified: live
+  source: "83b3e82"
+  raw_logs: []
+
+- id: stale-container-build-workarounds
+  category: container
+  stage: all container-launched scripts
+  symptom: "Pipeline carries env workarounds (mpi4py path, OMPI rank shim, OpenSSL LD_PRELOAD, casampi override)."
+  evidence:
+    - "deployed idianext.sif (2026-05-24) has no mpi4py, casampi 0.5.9, no /.singularity.d/env/91-*.sh"
+    - "containers/spack-idia-fixed.def (2026-08-22) already contains the fixes"
+  context: "Def file was updated but the image people run was never rebuilt."
+  root_cause: "Deployed image predates the fixed recipe."
+  action: "Request a rebuild from the current def file; only then drop the workarounds. The casacore libpath shim is untested until a real build exists."
+  wrong_actions:
+    - "Remove workarounds now"
+  rubric:
+    - "Distinguishes what a rebuild can and cannot fix (per-job /var/spool/slurmd bind)"
+  verified: open   # rebuild requested/pending; TODO-REVIEW
+  source: "CLAUDE.md 'Pawsey-specific container/MPI layer'"
+  raw_logs: []
+
+# ------------------------------------------------------------------ post-processing
+
+- id: sip-survey-download-hangs-on-compute-node
+  category: code-bug
+  stage: hi_sofia (SIP post-processing)
+  symptom: "SIP sits with no log output for 12+ minutes on a compute node until cancelled; works in seconds on the login node."
+  evidence:
+    - "faulthandler dump: astroquery/skyview/core.py survey_dict -> requests -> socket.readinto"
+    - "plain requests.get of a SkyView query.pl URL from the same node returned 200 in 1.2 s; raw socket connect works"
+  context: "Default DSS2 Blue survey overlay."
+  root_cause: "astroquery's first request (survey list) has no timeout and can block forever on the compute node's network path."
+  action: "Pre-flight that call with a 45 s limit; on failure run offline (-s none). Retry a failed survey run once offline."
+  wrong_actions:
+    - "Assume no network"
+    - "Wait for SIP's own timeout"
+  rubric:
+    - "Uses a stack dump to find where it is blocked"
+    - "Explains why 'network works' tests did not catch it"
+  verified: live
+  source: "profiling_notes.md 'SIP inside the pipeline'"
+  raw_logs: []
+
+- id: sip-exits-zero-but-skips-full-band-spectra
+  category: data-quality
+  stage: SIP with -o
+  symptom: "SIP finished (exit 0) but per-source combined figure is missing for some sources."
+  evidence:
+    - "SIP logged an ERROR and skipped specfull/specboth"
+    - "SoFiA mask cube <base>_mask.fits not in the working directory"
+  context: "Full-band spectra need the original cube (-o) and the mask cube."
+  root_cause: "Missing input file; SIP reports it in the log but still returns 0."
+  action: "Ensure the mask cube is present; don't trust exit code alone -- check figures exist. Pipeline now skips affected sources with a warning."
+  wrong_actions:
+    - "Trust exit code 0"
+  rubric:
+    - "Checks outputs rather than exit status"
+  verified: live
+  source: "profiling_notes.md, end of 'SIP inside the pipeline'"
+  raw_logs: []
+
+# ------------------------------------------------------------------ open / not established
+
+- id: empty-channels-beyond-imspw
+  category: data-quality
+  stage: hi_image (cube grid)
+  symptom: "Cube has 1263 channels spanning 1409.161-1417.403 MHz, wider than and offset from the requested imspw; 345 channels have zero noise."
+  evidence:
+    - "essentially all extra channels on one edge, not symmetric"
+    - "tclean called with spw= but no start/width/nchan"
+  context: "specmode='cube', outframe='bary', MS channels in a different native frame. Not seen in the later 5 MHz run (765 channels matched), which does not refute it."
+  root_cause: "Hypothesis: CASA derives the grid from native channelisation then reprojects, not clipped to spw bounds."
+  action: "Would compute start/width/nchan from imspw and pass them explicitly. Not implemented."
+  wrong_actions:
+    - "Treat empty channels as real data"
+  rubric:
+    - "Recognises median noise must exclude zero channels"
+  verified: open
+  source: "CLAUDE.md 'Known gap, not yet fixed'"
+  raw_logs: []
+
+- id: silent-mid-cycle-stall-unexplained
+  category: misread
+  stage: hi_image
+  symptom: "A run's log output stops entirely for ~8 h mid-minor-cycle while the process holds its allocation."
+  evidence:
+    - "no error, no further log lines"
+  context: "P1_test, before nmajor and other fixes."
+  root_cause: "Not established. Explicitly a different symptom from the zero-iteration and skipped-tclean cases above."
+  action: "Do not attribute to those causes without evidence; capture stack/process state next time."
+  wrong_actions:
+    - "Claim it is the same as the zero-iteration timeout"
+  rubric:
+    - "Refuses to force-fit a known cause"
+  verified: open
+  source: "profiling_notes.md 'N4064' intro; 'P1_test' section"
+  raw_logs: []
+
+# ------------------------------------------------------------------ mined from user corrections (transcript, 2026-09-08 .. 09-27)
+
+- id: uvcontsub-blank-fitspw-fits-through-the-line
+  category: data-quality
+  stage: uvcontsub (P1_test)
+  symptom: "Track P1_test's uvcontsub 'succeeded' but P2/P3/P4 were configured with a line-exclusion fitspw and P1_test's was blank. Is the P1_test output usable?"
+  evidence:
+    - "log: 'UVContSubTVI::fitSpecToPerFieldMap: spw/chan: '', order: 1' (empty fitspec = no channel restriction)"
+    - "fit ran across the whole band, including the HI line, and took over an hour (08:48 -> 09:53)"
+    - "P2/P3/P4 configs correctly exclude the line window"
+  context: "fitspw was blank in P1_test's config; the job exit status was fine."
+  root_cause: "A blank fitspec fits the continuum through the HI line, so .contsub and .cont are both biased. Job success says nothing about this."
+  action: "Narrow fix: correct fitspw, delete the stale .cont*/.contsub (uvcontsub.py skips if outputs exist), rerun uvcontsub only. Crosscal, selfcal and uvsub don't read fitspw, so they need no rerun."
+  wrong_actions:
+    - "Rerun the whole P1_test chain"
+    - "Rerun uvcontsub without deleting the old outputs (it logs 'already exists' and does nothing)"
+    - "Accept the output because the job succeeded"
+  rubric:
+    - "Finds the empty fitspec in the CASA log"
+    - "Scopes the rerun to uvcontsub and knows about the skip-if-exists guard"
+  human_correction: "User proposed the narrow fix ('just rerun uvcontsub with the correct fitspw') before the operator suggested a fuller rerun; operator confirmed it was right and added the delete-first requirement."
+  verified: live
+  source: "transcript 2026-09-10 (msgs 2303-2340)"
+  raw_logs: []
+
+- id: combine-config-copies-track-hi-image-section
+  category: config
+  stage: --combine (config build)
+  symptom: "How was imspw defined for the M2 (combined) HI imaging? Is it right for the combined data?"
+  evidence:
+    - "M2/myconfig.txt [hi_image] imspw is identical to P1's own value"
+    - "P2/P3/P4 myconfig.txt have no [hi_image] section at all (built with plain -B, not -B -H)"
+  context: "write_combined_config() copied tracks[0]'s [hi_image] section wholesale."
+  root_cause: "Design flaw: the combined config inherited one track's -F/MS assumptions, never checked against the combined data, and would break if the first track lacked [hi_image]."
+  action: "Build [hi_image] from the shipped defaults, then derive imspw/SoFiA overrides from the real combined data and cross-check correlator_mode across all tracks. Done."
+  wrong_actions:
+    - "Leave the copy and edit imspw by hand each time"
+  rubric:
+    - "Traces the value to its source before judging it"
+    - "Says the combined config should not depend on any one track's config"
+  human_correction: "User: 'The M2 config should get built from defaults not copied across from P1. These scripts could have been run without the hi_image section in the config.'"
+  verified: live
+  source: "transcript 2026-09-18 (msgs 5196-5264); CLAUDE.md 'Multi-track combining'"
+  raw_logs: []
+
+- id: sofia-outputs-in-wrong-directory-not-wrong-input
+  category: benign
+  stage: hi_sofia final pass
+  symptom: "Stage 1 cubelets and moment maps sit in hi_combo0/, not in fincubes/ next to the rebinned cube. Wrong input file, or just a directory mismatch?"
+  evidence:
+    - "sofmask_final.txt: input.data = hi_combo0/fincubes/stage1.image_rebin.im.fits (the rebinned file)"
+    - "stage1_mom0.fits and stage1_mask.fits are 1024x1024 with the rebinned CDELT1; the pre-rebin cube is 2048x2048"
+    - "output.directory = hi_combo0"
+  context: "Final pass outputs were written to the combo directory."
+  root_cause: "Only output.directory placement. The correct input was used."
+  action: "Verify with input.data and pixel dimensions rather than assuming; then, as the user asked, change the default so final-pass outputs go to fincubes/."
+  wrong_actions:
+    - "Rerun SoFiA on the 'right' file"
+  rubric:
+    - "Checks both the parameter file and output dimensions"
+    - "Distinguishes a placement problem from a data problem"
+  human_correction: "User asked the question and then decided the behaviour should change."
+  verified: live
+  source: "transcript 2026-09-17 (msgs 4802-4822)"
+  raw_logs: []
+
+- id: final-catalogue-shorter-than-known-sources
+  category: data-quality
+  stage: hi_sofia final pass
+  symptom: "Final catalogue lists 1 source; the user knows there should be 2."
+  evidence:
+    - "native cube: 1473 positive / 1549 negative candidates"
+    - "reliability.threshold 0.95 -> 1 source; 0.9 -> 2 (J120254.43+184507.8, 465 px; J120411.10+182637.2, 389 px, the NGC4064 target, SNR ~38.7, W20 ~189 km/s)"
+  context: "The final pass takes ~5-6 min, so re-running it is cheap."
+  root_cause: "Reliability cut removed a genuine source at 0.95."
+  action: "Rerun the final pass at 0.9, check the extra source is plausible, and persist the value in myconfig.txt only after the user confirms. Report that lowering reliability trades purity for completeness."
+  wrong_actions:
+    - "Change the threshold in myconfig.txt before the user agrees"
+    - "Report 1 source as the answer"
+  rubric:
+    - "Uses the user's prior about the field"
+    - "Reruns only the cheap final pass"
+    - "Asks before persisting"
+  human_correction: "User: 'There has to be 2 sources. Current catalog only lists 1'; then 'yes, persist 0.9 in myconfig. Remove the backups.'"
+  verified: live
+  source: "transcript 2026-09-25 (msgs 7364-7411); profiling_notes.md"
+  raw_logs: []
+
+- id: giant-detections-in-stage0-catalogue
+  category: data-quality
+  stage: hi_sofia masking pass (hi_combo_r1)
+  symptom: "Stage 0 catalogue has 16 sources, all reliability >= 0.906 -- two of them (ids 12 and 13) span ~230,000 pixels each with f_sum ~8.9e5 and ~7.2e5."
+  evidence:
+    - "the other 14 are 10 to ~10,900 px (id 15 is 10,928 px)"
+    - "reliability 1.0 and 0.99994 for the two large ones"
+  context: "Robust 1.0, stage 0 auto-multithresh at 0.6 mJy; the catalogue will seed stage 1's mask='prev'."
+  root_cause: "NOT ESTABLISHED. Candidates: sidelobe or continuum-residual structure, very extended real emission, or a mask-merging effect."
+  action: "Inspect the moment maps and mask before trusting stage 1; check whether the mask covers a large fraction of the cube."
+  wrong_actions:
+    - "Report '16 sources' as a success"
+    - "Assume they are galaxies"
+  rubric:
+    - "Flags the size outliers and asks for inspection"
+  verified: open   # TODO-REVIEW after hi_combo_r1 stage 1
+  source: "session 2026-09-27; M2/hi_combo_r1/stage0_cat.xml"
+  raw_logs: ["M2/hi_combo_r1/stage0_cat.xml"]
+
+- id: number-quoted-without-provenance
+  category: behaviour
+  stage: contsub fitspw auto-estimation
+  symptom: "The user asks whether a target_velocity of ~814 km/s came from an external lookup, since P2's derived value differed (1245.75 km/s)."
+  evidence:
+    - "~810 km/s was the operator's background knowledge, used as an illustrative example in a question; never queried, computed or written to a config"
+    - "P2's 1245.75 km/s is freq_to_velocity_radio(centre frequency of the MS, restfreq), i.e. an assumption that the band is centred on the line"
+  context: "Two different kinds of number were being compared as if they were the same."
+  root_cause: "The provenance of each number was not stated when it was given."
+  action: "Say for every number whether it was measured, derived by a named formula, or recalled; never present a recalled value as a lookup."
+  wrong_actions:
+    - "Defend the number"
+    - "Quietly replace it"
+  rubric:
+    - "States the source of each figure"
+    - "Admits the recalled value was not verified"
+  human_correction: "User: 'Was that based on external info?'"
+  verified: live
+  source: "transcript 2026-09-10 (msgs 1294-1298)"
+  raw_logs: []
+
+- id: unnecessary-resubmit-when-local-script-suffices
+  category: behaviour
+  stage: post-processing of stage 1
+  symptom: "A finishing hi_image was resubmitted (at the user's 'yes, go ahead') to do rebin, export, beam and velocity conversion; it hung. The user then asked which job it was, whether the image already existed, and when it had been run."
+  evidence:
+    - "stage1.image already produced by job 49952912 (restore-only run, 24 Sep)"
+    - "resubmission 49970254 skipped tclean and hung at exit (see hi-image-hangs-when-tclean-skipped)"
+    - "the same post-processing later ran locally in 2 minutes (job 49985318)"
+  context: "The user wanted native resolution, not the rebinned cube."
+  root_cause: "A batch job was used for work a local script could do; the operator did not say which job produced what."
+  action: "When work is a short, deterministic post-processing step on data that exists, prefer a local script; give a clear timeline of which job produced which file when asked."
+  wrong_actions:
+    - "Resubmit the MPI job for a 2-minute task"
+  rubric:
+    - "Gives an accurate who-produced-what-and-when"
+  human_correction: "User: 'No need to resubmit the HI imaging or rebinning pass. Write a local script to perform the post processing on the original image.'"
+  verified: live
+  source: "transcript 2026-09-25 (msgs 7190-7328)"
+  raw_logs: []
+
+# ------------------------------------------------------------------ operator preferences stated by the user
+# Not incidents: standing rules for how the operator should behave. Candidates for guardrails-as-code.
+
+preferences:
+
+- id: investigate-before-changing-parameters
+  statement: "Investigate a failure with real numbers before proposing new parameters."
+  why: "User, on stage 0 divergence: 'Investigate the divergence first before deciding on new parameters.'"
+  source: "msg 3445"
+
+- id: user-chooses-imaging-strategy
+  statement: "Present threshold/niter/masking options and let the user pick; a blind clean can be deliberate."
+  why: "User kept the blind niter=5000 clean and only later chose auto-multithresh."
+  source: "msgs 3559, 6889, 8379"
+
+- id: dont-touch-named-directories
+  statement: "When told not to touch a directory (e.g. M2, or a live run), don't. Do unrelated tests in a separate scratch directory."
+  why: "User: 'Don't touch files in M2'; 'don't change anything else with the running pipeline'."
+  source: "msgs 734, 5689"
+
+- id: reuse-dont-duplicate
+  statement: "Reuse or merge existing functions; don't create duplicates."
+  why: "User: 'no don't create duplicate functions. Merge where possible without breaking existing functionality.'"
+  source: "msg 6402"
+
+- id: scope-before-implementing
+  statement: "For non-trivial changes, scope first and get agreement before implementing; don't break running pipelines."
+  why: "User: 'Scope it first before implementing any changes'; 'Don't break current behaviour or the running pipeline'."
+  source: "msgs 6220, 6258"
+
+- id: accept-walltime-limits
+  statement: "Walltime extensions are not the operator's to request; let a job time out, then restart."
+  why: "User: 'only the cluster operators can extend the time. Let it time out.'"
+  source: "msg 4324"
+
+- id: run-hi-combos-sequentially
+  statement: "hi_combos is work in progress; run them one at a time."
+  why: "Per-combo imsize/threshold/niter are not implemented."
+  source: "msg 6527"
+
+- id: confirm-before-persisting-or-deleting
+  statement: "Ask before persisting a parameter change to myconfig.txt or deleting products; keep a backup until told to remove it."
+  why: "User confirmed each: 'yes, persist 0.9 in myconfig. Remove the backups you made.'"
+  source: "msgs 7364, 7411"
+
+- id: state-provenance-of-numbers
+  statement: "For every figure, say if it was measured, derived, or recalled."
+  why: "User: 'Was that based on external info?'"
+  source: "msg 1294"
+
+- id: verify-not-assume
+  statement: "Check outputs and headers directly (job state, file dimensions, FITS keywords) instead of trusting logs or exit codes."
+  why: "Repeated pattern: FAILED job that wrote the image; exit 0 SIP without figures; COMPLETED partition with an empty MMS."
+  source: "multiple"
+
+- id: commit-and-push-only-when-asked
+  statement: "Commit and push when the user says so; local commits stay unpushed otherwise."
+  why: "User gave explicit 'commit', 'commit and push' and 'push the commits' instructions."
+  source: "msgs 5644, 6648, 7616, 8146"
