@@ -1,3 +1,8 @@
+# SCOPE: cluster- and container-specific data, for the LLM-operator prototype only. Job IDs, node names,
+# scratch paths, container paths and versions (Setonix, idianext.sif, CASA/casampi as deployed) are kept
+# deliberately: they are what makes these cases realistic replay inputs. Not intended as general
+# documentation, and not portable to other clusters or container builds without re-capturing evidence.
+#
 # Incident cases for evaluating an LLM-assisted operator of this pipeline (DRAFT v0, for review).
 #
 # Each case is one real event from this project, written so it can be posed as:

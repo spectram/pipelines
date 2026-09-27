@@ -3,6 +3,11 @@
 Status: DRAFT v0 (2026-09-27). Nothing here is built. Companion to `llm_eval/incidents.yaml`
 (the evaluation set and operator preferences this plan depends on).
 
+**Scope note.** The evaluation data and knowledge in this plan are cluster- and container-specific
+(Setonix, the deployed `idianext.sif`, the CASA/casampi versions in it, real job IDs and scratch paths)
+and exist solely for this prototype. They are not general pipeline documentation and are not expected
+to transfer to other clusters or container builds without re-capturing evidence.
+
 ## 1. Goal
 
 Turn what is currently "the user operates the pipeline through a chat session" into a
