@@ -675,8 +675,11 @@ and the residual/model on disk were judged converged, so cleaning was stopped th
 **Restore-only run: `niter=0` with `calcres=False` does write the image.** In CASA's `task_tclean`, that
 combination skips deconvolution and still runs `restoreImages()`. It crashed at teardown with
 `RuntimeError: Parallel transport layer not initialized` (`releasempi`): with no gridding the parallel
-imager was never set up, though `tclean` tried to release it. The image was already on disk (per-channel
-σ 2.6–3.0e-4 Jy/beam at channels 100/380/600, i.e. not cleaned into the noise).
+imager was never set up, though `tclean` tried to release it. The restore had finished and written
+`stage1.image` before the crash (the image did not exist before this run, which was submitted to produce it).
+The decision to stop cleaning came from inspecting the stage 1 residual and model, judged converged; a
+per-channel rms sampled afterwards on the restored image (2.6–3.0e-4 Jy/beam at channels 100/380/600) agreed
+with the ~0.28 mJy/beam measured on the cube, i.e. not cleaned into the noise.
 
 **Why the finishing `hi_image` hung (inferred from logs + `casampi` source; the stuck processes weren't
 inspected).** `hi_image.py` runs as a 16-task MPI job and imports `casampi` at the top, so ranks 1–15 sit
