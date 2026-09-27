@@ -1,7 +1,9 @@
 # Plan: an LLM-assisted operator for the HI-imaging pipeline
 
-Status: DRAFT v0 (2026-09-27). Nothing here is built. Companion to `llm_eval/incidents.yaml`
-(the evaluation set and operator preferences this plan depends on).
+Status: DRAFT v0.1 (2026-09-27). Nothing here is built. v0.1 adds the didactic layer (§8),
+decision-trace graphs (§4.5), the handling of unstructured data (§4.4), candidate technologies (§4.6)
+and a current-status estimate (§15). Companion to `llm_eval/incidents.yaml` (the evaluation set and
+operator preferences this plan depends on).
 
 **Scope note.** The evaluation data and knowledge in this plan are cluster- and container-specific
 (Setonix, the deployed `idianext.sif`, the CASA/casampi versions in it, real job IDs and scratch paths)
@@ -16,7 +18,9 @@ small, testable system that can:
 1. **Answer** questions about the pipeline, its failures and the tools under it, with citations.
 2. **Diagnose** a failed or suspicious run from real evidence (logs, `sacct`, configs, FITS headers).
 3. **Propose and, with confirmation, perform** safe actions (resubmit, restore state, edit a config).
-4. Run first on a **hosted** LLM, and move to a **self-hosted** one when an evaluation says it is good
+4. **Teach**: explain, on request or as it goes, the interferometry and imaging reasoning behind each
+   decision, so the user learns why the pipeline does what it does (§8).
+5. Run first on a **hosted** LLM, and move to a **self-hosted** one when an evaluation says it is good
    enough for the parts it is asked to do.
 
 ### Non-goals (for now)
@@ -45,6 +49,10 @@ These come from how the pipeline has actually failed and been fixed (see `incide
   paragraph can miss it; a tool that refuses cannot.
 - **Provenance and staleness on every fact.** Pipeline knowledge expires (`nmajor` default changed on
   2026-09-25; the container may be rebuilt). Each retrieved fact carries a source, a date and a status.
+- **Record why, not just what.** Operating decisions are stored as traces (what was seen, which options
+  were weighed, who chose, what happened), because the reasoning is what gets reused and taught (§4.5).
+- **Teaching is grounded and separate.** Explanations use the user's own data and cited sources, are
+  opt-in, and never delay or change an action (§8).
 - **Model-agnostic from day one.** All model calls go through one adapter so the hosted-to-self-hosted
   move is a configuration change plus an eval run, not a rewrite.
 
@@ -65,7 +73,9 @@ These come from how the pipeline has actually failed and been fixed (see `incide
         │ knowledge layer             │   │ pipeline + Slurm +      │
         │  • doc index (vector+BM25)  │   │ run directories         │
         │  • knowledge graph          │   │ (unchanged)             │
-        │  • link/source registry     │   └─────────────────────────┘
+        │  • decision-trace graph     │   └─────────────────────────┘
+        │  • concept graph (teaching) │
+        │  • link/source registry     │
         └─────────────────────────────┘
                               ▲
         ┌─────────────────────┴───────────────┐
@@ -79,14 +89,15 @@ Proposed layout (new, CASA-free, outside `processMeerKAT/`):
 ```
 llm_ops/
   adapter/        model-provider interface + hosted and local implementations
-  knowledge/      ingestion, index, graph, source registry
+  knowledge/      ingestion, index, graph, decision traces, source registry
+  teaching/       concept graph, explanations, teaching-mode prompts, learner record
   tools/          typed pipeline tools and their guardrails
   agent/          loop, prompts, confirmation gate, citation check
 llm_eval/         (exists) incident cases, preferences, later: runner and scores
 ```
 
 Where it runs: a login node on Setonix, because that is where the run directories, `sacct` and the
-containers are. This needs outbound HTTPS to the hosted API from there (**to confirm**, see §12).
+containers are. This needs outbound HTTPS to the hosted API from there (**to confirm**, see §13).
 
 ## 4. Knowledge layer
 
@@ -170,6 +181,72 @@ Start with the schema from the earlier discussion, using data that already exist
 Retrieval combines three lookups: text search plus embeddings over documents, graph traversal from a
 matched failure signature (symptom → causes → checks → fixes), and the doc links attached to each node.
 
+### 4.4 Handling unstructured data
+
+The graph is not limited to structured records. Each kind of source has its own route in:
+
+| Kind | Route | Human step |
+|---|---|---|
+| Structured (script registry, correlator modes, config schema, `sacct`, FITS headers) | extracted by code into nodes and edges | none beyond tests |
+| Semi-structured, curated (`incidents.yaml`) | a person has already turned prose into schema-shaped cases; loaded directly | the authoring review |
+| Free text (notes, commit messages, documentation, transcripts) | an LLM proposes entities and relations per chunk, each with a pointer to the exact source passage | **the user reviews before it enters the graph**; unreviewed candidates stay in a staging area and are not used for answers |
+| Logs | signature matching and counting (`PMI_Init returned 1`, `iters=0->0`), with a template-mining step to discover new signatures; no LLM over raw logs | new signatures are confirmed by the user before they are linked to causes |
+| Documentation pages and PDFs | chunked with heading paths and stored as text, with a `documented-in` edge from the facts they support | link check (§4.2) |
+
+The graph always keeps the source text alongside: traversal finds candidate causes and checks, and
+the linked passages supply the detail and the citation. The graph never replaces the text.
+
+### 4.5 Decision-trace graphs
+
+"Context graph" is used for more than one thing; two meanings are relevant here.
+
+1. **Decision traces:** a record of why a decision was made: what was observed, which options were
+   considered, who chose, and what followed. This is the part a documentation-only RAG cannot supply,
+   and the project already has it in embryo: `hypothesis_trail`, `human_correction` and `preferences`
+   in `incidents.yaml`.
+2. **Temporal memory:** facts carry validity times ("true from A until superseded by B"), which is the
+   staleness problem (`nmajor` was -1 until 2026-09-25). The `last_verified` and `superseded_by`
+   attributes in §4.3 are a manual version of this.
+
+Plan: adopt both ideas in the existing graph rather than adding a separate product.
+
+- **Nodes:** `Observation` (a measured fact with its source), `Hypothesis` (with outcome: confirmed |
+  refuted | untested), `Option` considered, `Decision` (who: user | operator; when; parameters chosen),
+  `Outcome` (what happened, with the job/run reference), `Correction` (where the user redirected).
+- **Edges:** `observed-in`, `led-to-hypothesis`, `tested-by`, `refuted-by`, `chose`, `resulted-in`,
+  `corrected-by`, `applies-to` (a decision to a script, config key or stage), `explained-by` (a decision
+  to concept nodes in §8).
+- **Uses:**
+  - retrieval of similar past decisions ("last time stage 0 diverged at robust 0.0, this was tried,
+    this was chosen, this was the result");
+  - a check that a proposed action doesn't repeat a refuted hypothesis;
+  - raw material for teaching: a real decision with its real numbers (§8);
+  - the source of new eval cases, so every real incident becomes a regression case.
+- **Capture:** the agent loop writes a trace entry whenever the user confirms or overrides an action;
+  the user can amend it. Seeded from the 40 cases and the transcript-mined corrections.
+
+### 4.6 Candidate technologies
+
+Candidates to evaluate against the eval set, not commitments:
+
+- **Hybrid retrieval:** keyword search (BM25) plus embeddings, then a reranker. Exact parameter names
+  (`nmajor`, `reliability.threshold`) need keyword matching. Probably the cheapest large gain.
+- **Contextual chunking:** prefix each chunk with its heading path and source before embedding, so a
+  paragraph from a CASA page still carries the task it belongs to.
+- **GraphRAG-style methods** (entity graphs plus community summaries from text): could help with
+  thematic questions across many documents; likely heavier than needed for this corpus size.
+- **Temporal or agent-memory graph libraries:** for validity times and traces (§4.5); evaluate against a
+  plain graph plus SQLite before adopting.
+- **Structured output and tool calling:** diagnoses and actions returned as checkable JSON; constrained
+  decoding on the self-hosted side.
+- **A tool protocol (MCP):** expose the typed tools once and use them from any front end or model.
+- **Log-template mining** for signature discovery.
+- **Evaluation and tracing tooling:** an eval framework and an observability layer that records every
+  retrieval and tool call. More important than the choice of vector store.
+- **Vector store:** any lightweight one is enough at this scale; choose on convenience.
+- **Open embedding and reranking models** for the self-hosted path, so retrieval doesn't depend on a
+  hosted service.
+
 ## 5. Tool layer
 
 Typed functions with structured results. The agent has no shell.
@@ -206,13 +283,13 @@ for the large static context (system prompt, guardrails, registry index). Exact 
 are looked up at build time, not fixed here.
 
 **Self-hosted (phase 4).** An OpenAI-compatible endpoint served by an open-source inference server
-on Setonix GPU nodes (container), behind the same adapter. Selection is by the eval set (§8), not by
+on Setonix GPU nodes (container), behind the same adapter. Selection is by the eval set (§9), not by
 benchmark rank.
 
 **Data leaving Setonix (hosted phase).** Only text the tools return: log excerpts, config values,
 file headers, catalogue rows. No visibility or image data. A redaction step strips usernames,
 absolute home paths and email addresses. Decide with the user which logs/configs may be sent, and
-whether the project's data policy allows a hosted API at all (§12).
+whether the project's data policy allows a hosted API at all (§13).
 
 ## 7. Agent loop
 
@@ -226,7 +303,53 @@ whether the project's data policy allows a hosted API at all (§12).
 The user's stated preferences (`llm_eval/incidents.yaml`, `preferences:`) become a checked-in system
 prompt and, where possible, tool-level rules.
 
-## 8. Evaluation
+## 8. Didactic layer
+
+Goal: as the user operates the pipeline, they learn the interferometry and imaging reasoning behind
+each choice, not just the choice.
+
+**Why it fits.** Every decision point in this pipeline has a physical reason the project has already
+worked out: `robust` and the synthesized beam, the cell-size rule (18–22 pixels per beam area),
+w-projection and `wprojplanes`, major versus minor cycles and `nmajor`, threshold versus noise,
+`auto-multithresh`, SoFiA's channel-unit kernels, reliability as a positive-versus-negative count.
+
+**Design**
+
+- **Concept graph.** Nodes for concepts (uv-coverage, visibility weighting, the synthesized beam and
+  PSF, w-projection, CLEAN major/minor cycles, noise and thresholds, masking, matched filtering,
+  reliability, channel width and velocity resolution, ...), with prerequisite edges. Each node has a
+  short explanation and links to cited sources (standard textbooks and synthesis-imaging course
+  material chosen by the user, plus the tool documentation from §4.2).
+- **Decision points link to concepts.** A `Decision` (§4.5) or a config key points at the concepts it
+  depends on, so "why is stage 0's threshold 0.6 mJy?" leads to noise, thresholds and divergence.
+- **Worked examples from the user's own data,** not textbook numbers: the actual beam
+  (11.6″ × 6.9″), pixels per beam before and after rebinning (22.7 and 5.7), the measured noise
+  (~0.28 mJy/beam), the real divergence counts. Traces from real incidents are the examples.
+- **Teaching mode is opt-in** (off by default; per-session or per-decision). Levels:
+  1. *Why:* one or two sentences at each decision, with the numbers.
+  2. *Predict, then reveal:* ask what the user expects (for example the residual after stage 0) before
+     showing it.
+  3. *Deep dive:* the concept chain with prerequisites and citations, on request.
+- **Learner record (minimal).** Which concepts have been shown or answered, so explanations don't
+  repeat and prerequisites are offered when needed. Stored per user, viewable and deletable.
+- **Separation from operation.** Teaching output is generated after or alongside an action, never in
+  the path of a confirmation, and never changes what an action does.
+
+**Content and quality**
+
+- The bottleneck is curated content, not code: level, sequencing and correctness of the physics need
+  the user's review. Expect this to be slower than the engineering.
+- Teaching answers are held to the same citation rule as everything else: every physical claim has a
+  registry-backed source, or is labelled as the operator's own reasoning.
+- Unsupported physics is worse than an unsupported log reading, because it gets learned. The
+  evaluation (§9) checks explanations against their cited sources, not just tone.
+
+**What it can and can't do.** It can make each decision legible and connect it to the user's own data.
+It is not a curriculum, and it doesn't replace reading the textbook; it points to the relevant
+sections. Whether it actually teaches (as opposed to feeling helpful) has to be measured, for example
+by whether the user's predictions improve over time; the plan doesn't assume it.
+
+## 9. Evaluation
 
 Built first, because it is the only way to compare hosted models, retrieval settings and the future
 self-hosted model on equal terms.
@@ -243,6 +366,10 @@ self-hosted model on equal terms.
   - **citation validity** (link resolves and supports the claim) and **fabricated-link rate**
   - abstention when evidence is missing; correct use of "transient, resubmit"
   - provenance labelling of figures
+  - **explanations (§8):** correct against the cited source, no unsupported physical claims, and
+    appropriate to the level asked for (reviewed by the user)
+  - **decision-trace retrieval (§4.5):** does it surface the relevant past decision, and does it avoid
+    repeating a refuted hypothesis
   - cost and latency
 - **Baselines to beat:** (a) model alone, (b) model + document retrieval, (c) + graph, (d) + tools.
   Each step should earn its place on the held-out set.
@@ -250,21 +377,22 @@ self-hosted model on equal terms.
 - **Regression:** every real incident from now on is added as a case, and a run happens before any
   prompt, retrieval or model change.
 
-## 9. Phases
+## 10. Phases
 
 | Phase | Deliverable | Exit criterion |
 |---|---|---|
 | **0. Foundations** (small) | eval runner over `incidents.yaml`; captured log excerpts for as many cases as possible; held-out split | can score any model/prompt on the cases; baseline (a) measured |
 | **1. Knowledge + retrieval** (medium) | source registry with checked links; ingestion of internal docs and CASA/SoFiA/Slurm/Pawsey sources, including container `help()`/source; hybrid search; citations | baseline (b) beats (a) on the held-out set; **fabricated-link rate ≈ 0** |
+| **1b. Didactic layer** (medium; content-limited) | concept graph seeded with the ~15 concepts behind the pipeline's decisions, cited sources, teaching mode at the "why" and "predict then reveal" levels, minimal learner record | explanations pass the correctness check against their sources; the user finds the "why" notes correct and useful on real decisions |
 | **2. Read-only tools** (medium) | Tier 0 tools, signature matcher, chat/CLI loop | it reproduces the diagnoses in the eval from real evidence, without writes |
-| **3. Graph + guarded writes** (medium–large) | knowledge graph with provenance; Tier 1/2 tools with invariants and confirmation gate | baseline (c)/(d) measured; no guardrail bypass in adversarial tests; the user runs a real resubmit through it |
+| **3. Graph + traces + guarded writes** (medium–large) | knowledge graph with provenance; decision-trace capture; Tier 1/2 tools with invariants and confirmation gate | baseline (c)/(d) measured; traces retrievable and used by the eval; no guardrail bypass in adversarial tests; the user runs a real resubmit through it |
 | **4. Self-hosted trial** (large) | serving container on Setonix GPU nodes; adapter for it; side-by-side eval | per-task decision: which tasks can move (e.g. log triage) and which stay hosted; documented gaps |
 | **5. Operate + improve** (ongoing) | new incidents → cases → regression; graph reviewed monthly | eval scores stable or rising as the pipeline changes |
 
 Sizes are relative (small = days, medium = a couple of weeks, large = a month or more of part-time
 work); revise after Phase 0.
 
-## 10. Transition to a self-hosted model
+## 11. Transition to a self-hosted model
 
 Move task by task, not all at once.
 
@@ -279,7 +407,7 @@ Move task by task, not all at once.
 5. Only if the local model falls short in ways retrieval and prompting can't fix, consider
    adaptation using the reviewed incident set — and keep the held-out set out of any training data.
 
-## 11. Risks
+## 12. Risks
 
 | Risk | Mitigation |
 |---|---|
@@ -291,9 +419,12 @@ Move task by task, not all at once.
 | Eval contamination (answers in the indexed docs) | held-out cases kept out of the index until used |
 | Sending sensitive text to a hosted API | redaction, excerpts only, an explicit data policy, self-hosted path |
 | Small eval set (40 cases, one author, one pipeline) | keep adding real incidents; treat results as directional early on |
+| Wrong physics in teaching answers | citation required for every claim; correctness check against the source; user review of the concept set |
+| Teaching that feels helpful but doesn't teach | measure it (prediction accuracy over time); keep it opt-in and cheap to switch off |
+| Decision traces recorded wrongly or incompletely | the user can amend a trace; traces reference the run and job they came from |
 | Over-building before the eval says it's needed | each phase must beat the previous baseline on held-out cases |
 
-## 12. Open decisions for the user
+## 13. Open decisions for the user
 
 1. **Data policy:** may pipeline log excerpts and configs go to a hosted API? Any projects or
    collaborators' data with restrictions? (Determines redaction and how soon a local model is needed.)
@@ -306,11 +437,39 @@ Move task by task, not all at once.
    confirmation, and which must always show a full diff.
 5. **Authoritative documents:** which MeerKAT and site documents count as ground truth; whether the
    Pawsey documentation may be stored locally.
-6. **Reviewer:** the eval and the graph both need your review; how much time per week is realistic.
+6. **Reviewer:** the eval, the graph and the concept set all need your review; how much time per week
+   is realistic.
+7. **Didactic scope:** the intended learner (yourself, students, collaborators) and their starting
+   level; which textbooks or course notes count as the cited sources; whether teaching mode should
+   default off.
+8. **Trace capture:** whether every confirm/override should be recorded automatically, or only ones
+   you mark as worth keeping.
 
-## 13. Suggested first steps
+## 14. Suggested first steps
 
 1. Write the eval runner and capture log excerpts for the cases that lack them (Phase 0).
 2. Draft `sources.yaml` for CASA, SoFiA-2, SIP, Slurm, Pawsey and Singularity, and run the link check.
 3. Check that `help(<task>)` and `task_*.py` can be read from the container for the tasks in use.
-4. Decide §12 items 1–3 before any hosted call is made with real logs.
+4. Decide §13 items 1–3 before any hosted call is made with real logs.
+5. List the concepts behind the decisions in the current pipeline, and pick the sources they will cite
+   (input to Phase 1b).
+
+## 15. Where we are now (estimate, 2026-09-27)
+
+A judgement, not a measurement. By effort, roughly 15–20% of the build is done; by hard-to-replace
+content it is much more, because the domain knowledge is the slow part to acquire.
+
+| Component | State |
+|---|---|
+| Domain knowledge | most of the hard part exists: curated docs, incident write-ups, 40 cases, 11 preferences |
+| Evaluation | cases written; no runner, no held-out split; 31 of 40 lack a replayable log (~30%) |
+| Knowledge layer | raw material only; no source registry, index or graph (~10%) |
+| Decision traces | seeds exist (`hypothesis_trail`, `human_correction`, preferences); no schema or capture (~10%) |
+| Tools and guardrails | guardrails documented in prose; no typed tools (~0% of the code) |
+| Agent loop | the user and Claude Code currently act as the loop: useful as reference behaviour, not embedded |
+| Didactic layer | not started; the concepts and the worked-example numbers exist in the notes |
+| Model adapter and self-hosted path | not started |
+
+Largest unknowns, none yet tested: whether the login node can reach the hosted API, whether logs may
+leave the cluster, whether a self-hosted model can do the multi-step diagnosis, and how far a
+40-case set from one author can be trusted.
