@@ -277,3 +277,66 @@ def combo_dirnames(hi_combos):
         raise ValueError("'hi_combos' entries share output director{0} {1} -- each combo needs a distinct robust/uvtaper.".format(
             'ies' if len(duplicates) > 1 else 'y', duplicates))
     return dirnames
+
+
+def resolve_combo(hi_combos, spec=None, config_combo=None):
+
+    """Index into 'hi_combos' for a standalone tool that may be run after the pipeline has already
+    advanced '[hi_image] combo' past the last entry (the final hi_sofia does that). 'spec' is an
+    explicit choice -- an index ('1') or an output directory name ('hi_combo_r1'); without one,
+    'config_combo' is used if it is a valid index.
+
+    Arguments:
+    ----------
+    hi_combos : list (of dict)
+    spec : str or int, optional
+    config_combo : int, optional
+        '[hi_image] combo' from the runtime config.
+
+    Returns:
+    --------
+    index : int
+
+    Raises:
+    -------
+    ValueError
+        If nothing valid was chosen (the message lists the available directory names)."""
+
+    dirnames = combo_dirnames(hi_combos)
+    available = ', '.join('{0}={1}'.format(i, d) for i, d in enumerate(dirnames))
+
+    if spec is None or spec == '':
+        if config_combo is not None and 0 <= config_combo < len(dirnames):
+            return config_combo
+        raise ValueError("'[hi_image] combo'={0} is not a valid index, so say which combo to use explicitly ({1}).".format(config_combo, available))
+
+    text = str(spec)
+    if text in dirnames:
+        return dirnames.index(text)
+    if text.lstrip('-').isdigit() and 0 <= int(text) < len(dirnames):
+        return int(text)
+    raise ValueError("No combo matches {0!r} ({1}).".format(spec, available))
+
+
+def final_export_path(combo_dir, stages, rebin):
+
+    """Where `image_engine.finalize_stage()` puts the final stage's exported FITS cube:
+    '<combo_dir>/fincubes/stage<N>.image[_rebin.im].fits' -- 'stage<N>.image_rebin.im.fits' when the
+    cube was rebinned, 'stage<N>.image.fits' otherwise. Mirrors that function's naming (it derives
+    the name from the image it exports) so CASA-free tools can find the file.
+
+    Arguments:
+    ----------
+    combo_dir : str
+    stages : list (of ``Stage``)
+    rebin : bool
+        '[hi_image] rebin'.
+
+    Returns:
+    --------
+    path : str"""
+
+    base = 'stage{0}.image'.format(len(stages) - 1)
+    if rebin:
+        base += '_rebin.im'
+    return os.path.join(combo_dir, 'fincubes', base + '.fits')

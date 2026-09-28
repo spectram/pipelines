@@ -270,7 +270,30 @@ on one HI cube, entirely wasted on every manual resume before this existed, sinc
   indistinguishable from real progress without reading individual `SDAlgorithmBase::deconvolve` log lines
   (`iters=0->0 ... Reached cyclethreshold` on every channel, every cycle). A finite cap turns that wasted
   tail into a graceful return with a usable (if possibly short-of-convergence) image, instead of a
-  walltime `SIGKILL` with nothing exported.
+  walltime `SIGKILL` with nothing exported. **The cap only helps if `nmajor` x the cost per cycle fits the
+  walltime** (confirmed live 2026-09-28, N4064 robust 1.0 stage 1): ~2.6h per major cycle, so the default 15
+  would need ~40h; the job hit the 24h wall in cycle 9 with nothing exported. Estimate the per-cycle cost
+  from a previous stage's `Run Major Cycle` timestamps and set `nmajor` to fit, or stop a converged stage by
+  hand (next paragraph).
+
+**Stopping a converged stage, and finishing by hand (restore-only).** When a stage's residual/model are judged
+converged but it would run into the wall, don't let it: set that stage's `niter` to 0 in the *runtime*
+`.config.tmp` only (keep a backup; `myconfig.txt` keeps the real value) and resubmit `hi_image` once. With
+`niter=0` and the residual/model on disk, `tclean` skips deconvolution but still runs `restoreImages()`, so
+`stage<N>.image` is written (~45-60min, reusing PSF/residual/model/mask) -- and then the job crashes at MPI
+teardown (`RuntimeError: Parallel transport layer not initialized`, from `releasempi` with no gridding
+done), leaving `[run] continue = False` and no rebin/export. The image is valid; check it exists. **Do not
+resubmit `hi_image` to finish the export**: with the image present `tclean` is skipped, no `casampi`
+`atexit` hook is registered (it is only registered by the `MPIInterface()` inside `tclean`), and the MPI
+workers hang after the work is done (a latent bug, not yet fixed -- likely by creating `MPIInterface()` at
+startup or on the skip path). Instead reset `continue = True` and run **`hi_postprocess.py`** (in the
+pipeline container, from the run directory, `--combo <dir name or index>` because the config's own `combo`
+may have advanced): it reads `rebin`/`rebin_factor`/`pb_correct` to choose the cube
+(`stage<N>.image_rebin.im.fits` with rebin, `stage<N>.image.fits` without), runs `image_engine.finalize_stage()`
+plus the median-beam and velocity steps (skipped for a cube that already has them), and points
+`[hi_image] final_export` at it; then submit `hi_sofia.sbatch` for the final pass. `--dry-run` prints the
+plan without CASA. Config-state traps: after the final `hi_sofia`, `combo`/`stage` advance past the end
+(e.g. `combo=2, stage=0` for two combos); a crashed job leaves `continue=False`.
 
 **SoFiA output placement**: `hi_sofia.py`/`cont_sofia.py`'s masking pass must write its mask directly into
 the combo/stage's own top-level directory (`resolve_mask()` hard-codes `<imagename_fn(stage-1)>_mask.fits`
@@ -311,7 +334,14 @@ needs network access (compute nodes can reach SkyView) and a failed survey run i
 For the combined per-source figure it uses SIP's own `-m` when `magick` (or an ImageMagick `convert`) is found,
 and otherwise — or if `-m` didn't produce one — a Pillow port of SIP's `combine_images.py`
 (`sip_postprocess.combine_figures_pillow()`, same layout/branches, same 800kB size rule). SIP is HI-specific,
-so `cont_sofia.py` doesn't use it.
+so `cont_sofia.py` doesn't use it. **When the survey (optical) overlay is missing** -- the pipeline's SIP step
+ran offline because SkyView didn't answer from the compute node -- run **`hi_sip.py`** from a login node
+(`--config <run dir>/.config.tmp --combo <dir name>`; `--check` only reports which sources lack an overlay,
+`--force` redoes sources that have one). It finds the combo's final catalogue and cube (the cube from the
+`rebin` flag), re-runs SIP requiring the survey (`run_sip(require_survey=True)`: it stops instead of falling
+back offline again) and rebuilds the combined figures with Pillow if ImageMagick is absent. Overlay presence is
+detected from `<base>_<id>_mom0_<survey>.png` next to `<base>_<id>_mom0.png`
+(`sip_postprocess.missing_survey_overlays()`).
 
 **`[hi_image] cell` can be a per-combo list, not just one shared string.** Different `robust`/`uvtaper`
 weightings in `hi_combos` change the synthesized beam, so a single cell size doesn't suit every combo once

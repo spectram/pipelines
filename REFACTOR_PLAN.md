@@ -779,6 +779,21 @@ offline). It runs in the SoFiA container, which already has SIP's dependencies a
 `'auto-multithresh'`, `nmajor` is 15, stage 1's `threshold` is `''` (derived). The hung-`hi_image`-on-skip MPI
 shutdown bug (see `profiling_notes.md`) is still unfixed.
 
+**Done (2026-09-28): two standalone finishing tools, from running `hi_combo_r1` end to end.** (1)
+`hi_postprocess.py` finishes a combo whose final-stage image was created outside the normal flow (a restore-only
+run: stage `niter=0` in the runtime `.config.tmp`, which writes `stage<N>.image` then crashes at MPI teardown). It
+reads `rebin`/`rebin_factor`/`pb_correct` to pick the cube, runs `image_engine.finalize_stage()` and the
+beam/velocity steps (idempotent), and sets `final_export`; needs `--combo` when `[hi_image] combo` has advanced
+past the last entry. It exists because resubmitting `hi_image` for the export hangs (the skipped-`tclean` MPI bug,
+still unfixed). (2) `hi_sip.py` re-runs SIP from a login node when the pipeline's compute-node run had to go
+offline, requiring the survey overlay (`sip_postprocess.run_sip(require_survey=True)`, new) and detecting missing
+overlays with `sip_postprocess.missing_survey_overlays()`. Shared, CASA-free helpers `image_stages.resolve_combo()`
+and `image_stages.final_export_path()` back both. Tested by unit checks of the helpers, a `--dry-run` and `--check`
+against the real `M2` config, and a real `hi_sip.py` run (DSS2 Blue for all 3 `hi_combo_r1` sources); the
+`hi_postprocess.py` CASA path is a thin wrapper over the same calls the one-off script used to produce
+`hi_combo_r1`'s cube, but was not itself re-run on real data. Also documented: `nmajor` must fit the walltime
+(stage 1 at ~2.6h/cycle needs ~40h for 15 cycles) -- `CLAUDE.md`, `profiling_notes.md`.
+
 ---
 
 ## Context

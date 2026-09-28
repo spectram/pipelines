@@ -225,7 +225,29 @@ def _combine_all_pillow(figdir, base, catalog):
     return made
 
 
-def run_sip(catalog, original_fits, sip_path='', surveys='', timeout=1800):
+def missing_survey_overlays(figdir, base):
+
+    """Source ids in SIP's '<base>_figures' directory that have no survey-overlay image. SIP names an
+    overlay '<base>_<id>_mom0_<survey>.png' next to the plain '<base>_<id>_mom0.png', so a source
+    with the latter but not the former was made offline (or its survey download failed).
+
+    Arguments:
+    ----------
+    figdir : str
+    base : str
+        Catalogue basename without '_cat.xml' (e.g. 'stage1').
+
+    Returns:
+    --------
+    ids : list (of int)
+        Sorted; empty if every source has an overlay (or there are no figures at all)."""
+
+    ids = sorted({int(m.group(1)) for m in (re.search(r'_(\d+)_mom0\.png$', f)
+                                             for f in glob.glob(os.path.join(figdir, '{0}_*_mom0.png'.format(base)))) if m})
+    return [i for i in ids if not glob.glob(os.path.join(figdir, '{0}_{1}_mom0_*.png'.format(base, i)))]
+
+
+def run_sip(catalog, original_fits, sip_path='', surveys='', timeout=1800, require_survey=False):
 
     """Run SIP on 'catalog' (a SoFiA-2 XML catalogue), then make sure every source has a combined
     figure: SIP's own `-m` when ImageMagick is available, the Pillow port above when it isn't (or
@@ -245,6 +267,10 @@ def run_sip(catalog, original_fits, sip_path='', surveys='', timeout=1800):
         SIP `-s` value (e.g. 'DSS2 Blue', 'none' for offline); '' leaves SIP's own default.
     timeout : int, optional
         Seconds allowed per SIP invocation.
+    require_survey : bool, optional
+        Don't fall back to offline mode (return False instead) if SkyView isn't reachable or the survey
+        run fails. For a manual re-run whose whole point is the overlay; the pipeline itself leaves
+        this False so an unreachable SkyView still yields figures.
 
     Returns:
     --------
@@ -278,11 +304,17 @@ def run_sip(catalog, original_fits, sip_path='', surveys='', timeout=1800):
 
     offline = surveys.lower() == 'none'
     if not offline and not _surveys_reachable(env):
+        if require_survey:
+            logger.error("SkyView isn't responding from this node, and a survey overlay was required -- not running offline. Try again from a login node.")
+            return False
         logger.warning("SkyView isn't responding from this node (astroquery's survey-list request didn't complete in time) -- running offline (-s none), without the survey overlay.")
         surveys, offline = 'none', True
 
     survey_args = ['-s', surveys] if surveys else []
     ok = invoke(survey_args)
+    if not ok and not offline and require_survey:
+        logger.error('sofia_image_pipeline failed with the survey overlay and a survey overlay was required -- not retrying offline.')
+        return False
     if not ok and not offline:
         logger.warning('sofia_image_pipeline failed with the survey overlay (no network access?) -- retrying offline (-s none).')
         ok = invoke(['-s', 'none'])
