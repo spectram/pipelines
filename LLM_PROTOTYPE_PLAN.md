@@ -223,7 +223,7 @@ Plan: adopt both ideas in the existing graph rather than adding a separate produ
   - raw material for teaching: a real decision with its real numbers (§8);
   - the source of new eval cases, so every real incident becomes a regression case.
 - **Capture:** the agent loop writes a trace entry whenever the user confirms or overrides an action;
-  the user can amend it. Seeded from the 46 cases and the transcript-mined corrections.
+  the user can amend it. Seeded from the 47 cases and the transcript-mined corrections.
 
 ### 4.6 Candidate technologies
 
@@ -354,11 +354,11 @@ by whether the user's predictions improve over time; the plan doesn't assume it.
 Built first, because it is the only way to compare hosted models, retrieval settings and the future
 self-hosted model on equal terms.
 
-- **Data:** the 46 cases and 13 preferences in `incidents.yaml`, split into a **development** set and
+- **Data:** the 47 cases and 13 preferences in `incidents.yaml`, split into a **development** set and
   a **held-out** set. Held-out cases must not appear in `CLAUDE.md`/`profiling_notes.md` before they
   are used, otherwise retrieval just finds the answer. New incidents go into held-out first.
 - **Replay:** each case is run with its real evidence where a log exists (`raw_logs`) and needs a
-  captured excerpt where it doesn't. 41 of the 46 currently need one.
+  captured excerpt where it doesn't. 42 of the 47 currently need one.
 - **Metrics:**
   - diagnosis correct (against `root_cause` and the rubric)
   - action safe and correct (against `action` and `wrong_actions`)
@@ -418,7 +418,7 @@ Move task by task, not all at once.
 | Knowledge goes stale (defaults change, container rebuilt) | status/`last_verified`/`superseded_by` on every fact; update on each pipeline change |
 | Eval contamination (answers in the indexed docs) | held-out cases kept out of the index until used |
 | Sending sensitive text to a hosted API | redaction, excerpts only, an explicit data policy, self-hosted path |
-| Small eval set (46 cases, one author, one pipeline) | keep adding real incidents; treat results as directional early on |
+| Small eval set (47 cases, one author, one pipeline) | keep adding real incidents; treat results as directional early on |
 | Wrong physics in teaching answers | citation required for every claim; correctness check against the source; user review of the concept set |
 | Teaching that feels helpful but doesn't teach | measure it (prediction accuracy over time); keep it opt-in and cheap to switch off |
 | Decision traces recorded wrongly or incompletely | the user can amend a trace; traces reference the run and job they came from |
@@ -461,8 +461,8 @@ content it is much more, because the domain knowledge is the slow part to acquir
 
 | Component | State |
 |---|---|
-| Domain knowledge | most of the hard part exists: curated docs, incident write-ups, 46 cases, 13 preferences |
-| Evaluation | cases written; no runner, no held-out split; 41 of 46 lack a replayable log (~30%) |
+| Domain knowledge | most of the hard part exists: curated docs, incident write-ups, 47 cases, 13 preferences |
+| Evaluation | cases written; no runner, no held-out split; 42 of 47 lack a replayable log (~30%) |
 | Knowledge layer | raw material only; no source registry, index or graph (~10%) |
 | Decision traces | seeds exist (`hypothesis_trail`, `human_correction`, preferences); no schema or capture (~10%) |
 | Tools and guardrails | guardrails documented in prose; no typed tools yet. Two standalone finishing tools exist as templates (`hi_postprocess.py`, `hi_sip.py`, with `--dry-run`/`--check` and refuse-on-bad-state behaviour) |
@@ -472,4 +472,4 @@ content it is much more, because the domain knowledge is the slow part to acquir
 
 Largest unknowns, none yet tested: whether the login node can reach the hosted API, whether logs may
 leave the cluster, whether a self-hosted model can do the multi-step diagnosis, and how far a
-46-case set from one author can be trusted.
+47-case set from one author can be trusted.

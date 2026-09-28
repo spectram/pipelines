@@ -341,7 +341,9 @@ ran offline because SkyView didn't answer from the compute node -- run **`hi_sip
 `rebin` flag), re-runs SIP requiring the survey (`run_sip(require_survey=True)`: it stops instead of falling
 back offline again) and rebuilds the combined figures with Pillow if ImageMagick is absent. Overlay presence is
 detected from `<base>_<id>_mom0_<survey>.png` next to `<base>_<id>_mom0.png`
-(`sip_postprocess.missing_survey_overlays()`).
+(`sip_postprocess.missing_survey_overlays()`). A combined `_combo.png` left by an earlier offline run is
+rebuilt (not kept) when any figure it is made from is newer -- SIP without `-m` never rewrites it, so a plain
+"skip if it exists" check silently kept the overlay-less figure (found live on `hi_combo_r1`, 2026-09-28).
 
 **`[hi_image] cell` can be a per-combo list, not just one shared string.** Different `robust`/`uvtaper`
 weightings in `hi_combos` change the synthesized beam, so a single cell size doesn't suit every combo once

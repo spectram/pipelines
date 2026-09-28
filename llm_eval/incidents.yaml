@@ -984,6 +984,29 @@ cases:
   raw_logs: []
 
 
+- id: combined-figure-stale-after-overlay-rerun
+  category: code-bug
+  stage: SIP post-processing (hi_sip.py re-run)
+  symptom: "After re-running SIP from the login node, the per-source mom0/snr/mom1/mom2 images have the DSS2 overlay, but the combined _combo.png does not."
+  evidence:
+    - "stage1_1_combo.png timestamp 19:39 (pipeline's offline run, ImageMagick -m) vs stage1_1_mom0_dss2blue.png 19:51"
+    - "the login node has no ImageMagick, so SIP made no new combo; the Pillow step skipped sources that already had a combo"
+    - "the old combo is 3073 px wide with no overlay panel; rebuilt ones include it as the first panel"
+  context: "run_sip() built Pillow combos only for sources missing one."
+  root_cause: "Existence check instead of freshness: an old combo from an earlier offline run counted as done."
+  action: "Rebuild a combo when any figure it is made from is newer (fixed in sip_postprocess._combine_all_pillow); rebuilt the three r1 combos."
+  wrong_actions:
+    - "Delete the figures directory and rerun everything"
+    - "Assume the overlay run failed because the combined image lacks it"
+  rubric:
+    - "Compares timestamps and image sizes before concluding"
+    - "Identifies skip-if-exists as the cause"
+  human_correction: "User noticed the combined figure lacked the overlay after being told the overlay run had succeeded (the operator had checked the mom0 overlay files, not the combined figure)."
+  verified: live
+  source: "transcript 2026-09-28; sip_postprocess.py"
+  raw_logs: []
+
+
 # ------------------------------------------------------------------ operator preferences stated by the user
 # Not incidents: standing rules for how the operator should behave. Candidates for guardrails-as-code.
 

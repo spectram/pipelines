@@ -215,7 +215,12 @@ def _combine_all_pillow(figdir, base, catalog):
                                              for f in glob.glob(os.path.join(figdir, '{0}_*_mom0.png'.format(base)))) if m})
     made = []
     for src_id in ids:
-        if os.path.exists(os.path.join(figdir, '{0}_{1}_combo.png'.format(base, src_id))):
+        #Keep a combined figure only if it is newer than every figure it is built from: an older one is
+        #stale -- e.g. made by an earlier offline run, before a later re-run added the survey overlay
+        #(SIP without `-m` never rewrites it, so it would otherwise silently keep lacking the overlay).
+        combo = os.path.join(figdir, '{0}_{1}_combo.png'.format(base, src_id))
+        parts = [f for f in glob.glob(os.path.join(figdir, '{0}_{1}_*.png'.format(base, src_id))) if f != combo]
+        if os.path.exists(combo) and all(os.path.getmtime(combo) >= os.path.getmtime(f) for f in parts):
             continue
         try:
             made.append(combine_figures_pillow(figdir, base, src_id, has_freq=has_freq))
