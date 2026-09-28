@@ -738,3 +738,70 @@ compute nodes turned up:
   spectra also need the SoFiA mask cube (`<base>_mask.fits`) in the working directory; without it SIP logs an
   ERROR, still exits 0, and skips `specfull`/`specboth` — so the per-source Pillow combination skips that
   source with a warning rather than failing the rest.
+
+## N4064 — robust 1.0 combo (`hi_combo_r1`, 2.25arcsec cells, rebin [2,2,1]) end to end (2026-09-25 to 09-28)
+
+Second combo through the pipeline, after the robust 0.0 run above: `stage 0` `auto-multithresh` at 0.6mJy, `stage 1`
+`mask='prev'` with a derived threshold (0.2565mJy), 765 channels, 2 nodes/8 tasks-per-node/230GB. Job IDs and times
+are from `sacct`.
+
+| Job | What | Result |
+|---|---|---|
+| 49991294 | stage0 `hi_image` | FAILED, 5m06s: MPI startup (below), nid001034 |
+| 49997163 | stage0 `hi_image`, resubmitted with `--exclude` | COMPLETED, 19h37m |
+| 49997164 | `hi_sofia` masking pass | COMPLETED, 11m49s: 16 sources at reliability 0.9 |
+| 49997165 | stage1 `hi_image` | FAILED, 5m32s: MPI startup again, nid002499 |
+| 50019305 | stage1 `hi_image`, `nmajor=15`, threshold 0.2565mJy | **TIMEOUT**, 24h00m16s, in major cycle 9 |
+| 50066298 | stage1 restore-only (`niter=0`) | FAILED, 44m06s, but `stage1.image` was written |
+| 50068073 | `hi_postprocess`-style local run (rebin, export, beam, velocity) | COMPLETED, 7m28s (32 cores/56GB) |
+| 50068472 | final `hi_sofia` (18 cores/32GB) | COMPLETED, 2m26s: 3 reliable sources |
+
+### Findings
+
+- **`PMI_Init returned 1` at job start is transient, not node-specific.** Two stage `hi_image` jobs died within ~5
+  minutes with `_pmi_mmap_tmp: Warning bootstrap barrier failed: num_syncd=7, pes_this_node=8, timeout=180 secs`
+  followed by `MPIR_pmi_init(110): PMI_Init returned 1`. One rank on one node failed to complete Cray PMI
+  bootstrap in 180s; the pipeline never started. It hit two different nodes, so excluding the first
+  (`--exclude=nid001034`) did not prevent the second. Resubmitting the unchanged job worked both times; nothing
+  in `.config.tmp` changes because `hi_image.py` never ran.
+- **`nmajor=15` did not end stage 1 within the wall.** The log shows ~2.6h per major cycle (9 cycles in 24h), so 15
+  needs ~40h. The cap only helps if it fits the walltime (see CLAUDE.md).
+- **Convergence evidence at the wall** (from `SDAlgorithmBase::deconvolve` lines, per major cycle, 765 channels):
+  channels still cleaning 104 / 251 / 347 / 337 / 314 / 286 / 252 / 212 (cycles 1-8); iterations added per cycle
+  1,629 / 5,982 / 44,573 / 18,200 / 8,419 / 4,198 / 1,967 / 929. Cycle 8 added ~2% of cycle 3. No "Possible
+  divergence" warnings at any point.
+- **Residual noise is flat across the field and not elevated on the target.** Robust rms (1.4826 x MAD) of
+  `stage1.residual`, median over 764 channels: centre (150px box on NGC 4064) 1.95e-4, mid (four 300px boxes ~19
+  arcmin out) 1.97e-4, edge 1.98e-4 Jy/beam; centre/mid 0.99, and no channel had centre/mid > 1.2. This matches the
+  stage-0 noise the threshold was derived from (0.2565mJy = 1.3 x 0.197mJy). Measured on the restored image
+  afterwards: 1.86-2.13e-4 at channels 100/380/600, again centre = off-centre.
+- **The model has substantial negative components** (not a proof of negative bowls): 24% of the total |model|
+  is negative over the cube (31% in the centre box, cancelling 46% of the positive flux there), 281 of 765 channels
+  contain some, most negative pixel -1.2mJy/beam. With a threshold of only 1.3 sigma and a very broad stage-0 mask
+  (two ~230,000-pixel regions in the masking-pass catalogue) this is consistent with clean components placed on
+  noise peaks inside the mask; where they sit was not mapped. The decision made was to stop cleaning (restore-only).
+- **Final catalogue (3 sources at reliability 0.9, rebinned cube):** J120254.43+184507.7 and J120411.13+182636.5
+  (the target, W20 ~191km/s) -- the same two as the robust 0.0 run -- plus a marginal 33-voxel, ~2.5km/s-wide,
+  reliability 0.985 detection. Their voxel counts (26,620 and 16,269) are ~50x those of the robust 0.0 run
+  (465, 389); not explained. Rebinned cube: 1024x1024, 4.5arcsec pixels, beam 23.4x15.3arcsec = **20.0 pixels per
+  beam area**, inside the 18-22 target.
+- **PSF reuse across stages** was considered: the PSF depends only on uv coverage, weighting, gridder, cell/imsize and
+  channel selection, all shared by a combo's stages, so `stage1.psf` should equal `stage0.psf`. It would save the
+  one-time ~40-50min setup (~3-4% of a stage) and is not free of risk: the `selfcal_part1` crash came from a
+  linked PSF whose weights belonged to another image. Not tried.
+
+### SIP overlay from the login node
+
+The pipeline's SIP step again ran offline on the compute node (`SkyView isn't responding ... running offline`,
+pre-flight timed out at 45s; ImageMagick `-m` used, no DSS2 overlay). From a login node the same survey-list request
+answers in ~5s. `hi_sip.py` (new) re-ran SIP there with the survey required (~4 min for 3 sources, cube read
+included): DSS2 Blue retrieved for all three, contour overlays made, combined figures rebuilt with Pillow
+(no ImageMagick on the login node).
+
+### Housekeeping numbers
+
+`cleanup.sh`/`allSPW_cleanup.sh` are `rm -r *ms` (per SPW directory / at the top level). For track P1 (2.9TiB):
+per-SPW `*.mms` 4 x 170G = 680G, top-level `NGC4064.mms` 611G + two calibrator MMSs 34G + four `_im_N.rms` 0.6G =
+645G; both together ~1.3TiB (45%); `.post_selfcal` 611G, `.contsub` 459G, `.cont` 307G and `hi_combo0` 203G are
+untouched. The glob matches any name ending in "ms" (e.g. `.rms`), and in `M2` it would delete the 1.8TB
+`N4064_combined.mms` that imaging reads.

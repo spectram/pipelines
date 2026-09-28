@@ -60,7 +60,7 @@ cases:
     - "Identifies failure as MPI/PMI init, before hi_image.py ran"
     - "Says no pipeline state was changed, so resubmit is safe"
     - "Resubmits only the failed step and its dependants, not the full chain"
-  verified: live   # first failure: resubmitted with --exclude, stage 0 then ran 19h37m to completion. second failure: resubmit pending at time of writing.
+  verified: live   # both failures were cured by resubmitting unchanged (stage 0 ran 19h37m; stage 1 then ran to its walltime). --exclude of the first node did not prevent the second failure on another node.
   source: "session 2026-09-25/27; jobs 49991294, 49997165"
   raw_logs: ["M2/logs/hi_image-49991294.err", "M2/logs/hi_image-49997165.err"]
 
@@ -847,6 +847,143 @@ cases:
   source: "transcript 2026-09-25 (msgs 7190-7328)"
   raw_logs: []
 
+# ------------------------------------------------------------------ added 2026-09-28 (hi_combo_r1 end to end)
+
+- id: nmajor-cap-exceeds-walltime
+  category: config
+  stage: hi_image stage 1 (nmajor=15, 24 h wall)
+  symptom: "Stage 1 TIMEOUT at 24 h with nmajor=15 set; the cap never triggered and no image was exported."
+  evidence:
+    - "log: 'Run Major Cycle 9' was the last; ~2.6 h per cycle (9 cycles in 24 h)"
+    - "threshold derived 0.2565 mJy; no 'Possible divergence' warnings"
+    - "per-cycle iterations added fall 44,573 (cycle 3) -> 929 (cycle 8); 212 of 765 channels still active at cycle 8"
+  context: "robust 1.0 combo, 765 channels, 2 nodes/8 tasks-per-node. nmajor=15 was set to stop a converged stage gracefully."
+  root_cause: "A major-cycle cap only ends a stage in time if cap x cost-per-cycle fits the walltime. 15 x 2.6 h is ~40 h."
+  action: "Estimate cost per cycle from an earlier stage's 'Run Major Cycle' timestamps and set nmajor to fit, or stop the converged stage by hand (restore-only, then hi_postprocess.py)."
+  wrong_actions:
+    - "Assume the cap protects the run"
+    - "Extend walltime (not the operator's to request)"
+  rubric:
+    - "Computes hours per cycle from the log and compares cap x cost with the wall"
+    - "Reads iterations-added per cycle as the convergence signal"
+  verified: live
+  source: "profiling_notes.md 'hi_combo_r1'; job 50019305"
+  raw_logs: ["M2/logs/hi_image-50019305.casa"]
+
+- id: restore-only-then-finish-locally
+  category: behaviour
+  stage: hi_image stage 1 (converged, would hit the wall)
+  symptom: "Stage 1 residual/model are judged converged; the job will time out. How to get the image and finish the pipeline without more cleaning?"
+  evidence:
+    - "restore-only run: stage niter=0 in .config.tmp only, resubmit hi_image -> writes stage1.image (44 min), then FAILED at releasempi"
+    - "resubmitting hi_image for the export would skip tclean and hang (see hi-image-hangs-when-tclean-skipped)"
+    - "local hi_postprocess.py run: rebin, export, beam, velocity in 7m28s; then hi_sofia final pass 2m26s"
+  context: "Config change is runtime-only (backup kept); myconfig.txt keeps the real value. continue must be reset True after the crash. Config combo/stage may have advanced."
+  root_cause: "n/a -- a procedure: stop cleaning by restoring from the existing residual/model, then finish outside the MPI job."
+  action: "1) back up and set niter 0 for that stage in .config.tmp; 2) resubmit hi_image (exclude known-bad nodes if needed); 3) verify the image exists despite FAILED; 4) continue=True; 5) hi_postprocess.py --combo <dir>; 6) submit hi_sofia."
+  wrong_actions:
+    - "Resubmit hi_image to do the export"
+    - "Edit myconfig.txt"
+    - "Delete residual/model to 'start clean'"
+  rubric:
+    - "Uses restore-only, verifies the image, and finishes with the local tool"
+    - "Knows the config edit is runtime-only and reversible"
+  human_correction: "User decided the stage was converged from the residual/model ('more or less converged'), and asked for numbers first: centre vs off-centre rms and whether the model had negative bowls."
+  verified: live
+  source: "CLAUDE.md 'Stopping a converged stage'; transcript 2026-09-28"
+  raw_logs: []
+
+- id: model-negative-components-vs-visual-inspection
+  category: data-quality
+  stage: hi_image stage 1 (convergence check)
+  symptom: "The user, looking at the image, sees no negative bowls in the model and leans towards a few more major cycles; measured numbers show substantial negative model components."
+  evidence:
+    - "negative components carry 24% of total |model| over the cube, 31% in the centre box (cancelling 46% of positive flux there)"
+    - "281 of 765 channels have some negative component; most negative pixel -1.2 mJy/beam"
+    - "residual robust rms flat: centre 1.95e-4, mid 1.97e-4, edge 1.98e-4 Jy/beam; no channel with centre/mid > 1.2"
+    - "iterations added per cycle down to 929 by cycle 8; stage 0 mask had two ~230,000-pixel regions"
+  context: "Threshold 0.2565 mJy is only 1.3 sigma of the 0.195 mJy noise."
+  root_cause: "NOT ESTABLISHED. Consistent with clean components on noise peaks inside a broad mask; where the negatives sit was not mapped, and 'bowls' (extended negative structure) were not shown or ruled out."
+  action: "Report both the measurements and their limits (a robust rms hides bright structure; a sum of negatives isn't a bowl), recommend stopping given the tail, and leave the decision with the user, who may look at the negatives' spatial distribution first."
+  wrong_actions:
+    - "Tell the user they are wrong"
+    - "Claim the model is clean because rms is flat"
+    - "Continue cleaning without saying what the extra cycles add (~2% of cycle 3)"
+  rubric:
+    - "States measured values and their caveats"
+    - "Distinguishes noise-cleaning from negative bowls"
+    - "Does not overrule the user's judgement; offers a further check"
+  human_correction: "User's visual impression (no bowls) and preference for 3-4 more cycles versus the operator's numbers; user then chose restore-only."
+  verified: open
+  source: "transcript 2026-09-28; profiling_notes.md 'hi_combo_r1'"
+  raw_logs: []
+
+- id: sip-overlay-missing-after-pipeline
+  category: data-quality
+  stage: hi_sofia SIP post-processing
+  symptom: "SIP figures exist for every source but none has the optical (DSS2) overlay."
+  evidence:
+    - "hi_sofia log: 'SkyView isn't responding from this node ... running offline (-s none)'"
+    - "figures dir has <base>_<id>_mom0.png but no <base>_<id>_mom0_dss2blue.png"
+    - "SkyView survey list answers in ~5 s from the login node"
+  context: "The pipeline's SIP step runs on a compute node, where astroquery's first request can block forever."
+  root_cause: "Compute-node network path; the pipeline deliberately falls back to offline so the step still succeeds."
+  action: "From a login node run hi_sip.py --config <run>/.config.tmp --combo <dir> (requires the survey; --check reports which sources lack one)."
+  wrong_actions:
+    - "Rerun hi_sofia (same node type, same result)"
+    - "Treat the missing overlay as a SIP bug"
+  rubric:
+    - "Recognises the offline fallback and where it is logged"
+    - "Uses the login node and a survey-required re-run"
+  verified: live
+  source: "profiling_notes.md 'SIP overlay from the login node'; hi_sip.py"
+  raw_logs: ["M2/logs/hi_sofia-50068472.err"]
+
+- id: catalogue-voxel-counts-unexpectedly-large
+  category: data-quality
+  stage: hi_sofia final pass (hi_combo_r1)
+  symptom: "Final catalogue lists the same two sources as the robust 0.0 run, but with ~50x the voxel counts (26,620 and 16,269 vs 465 and 389), plus a marginal third source."
+  evidence:
+    - "rebinned cube: 4.5 arcsec pixels, beam 23.4x15.3 arcsec (20.0 pixels per beam area), which should give fewer pixels per source, not more"
+    - "third source: 33 voxels, ~2.5 km/s wide, reliability 0.985"
+    - "target W20 ~191 km/s, matching the earlier ~189 km/s"
+  context: "Different weighting and resolution from the earlier run; stage 0 catalogue had two ~230,000-pixel regions."
+  root_cause: "NOT ESTABLISHED. Candidates: wider beam and kernels merging more emission; broad-mask effects carried into the final pass; a linker-radius effect."
+  action: "Inspect the moment maps and mask before trusting the sizes; treat the 33-voxel source as needing a by-eye check."
+  wrong_actions:
+    - "Report the sizes as physical"
+    - "Explain the difference confidently without inspecting"
+  rubric:
+    - "Notes the size discrepancy and that the expected direction is the opposite"
+    - "Proposes inspection instead of a guessed cause"
+  verified: open
+  source: "session 2026-09-28; hi_combo_r1/fincubes/stage1_cat.xml"
+  raw_logs: ["M2/hi_combo_r1/fincubes/stage1_cat.xml"]
+
+- id: cleanup-glob-matches-more-than-ms
+  category: behaviour
+  stage: cleanup.sh / allSPW_cleanup.sh
+  symptom: "Which files would the generated cleanup scripts delete, and would running M2's cleanup.sh be safe?"
+  evidence:
+    - "every cleanup script is 'rm -r *ms' (per SPW directory, or at the top level)"
+    - "in M2 the glob matches N4064_combined.mms (1.8 TB), the data hi_image reads"
+    - "at a Pn top level it matches per-field MMSs, NGC4064.mms (611 G) and the four NGC4064_im_N.rms directories"
+    - "'.mms.contsub', '.cont', '.post_selfcal' and '.flagversions' are not matched"
+  context: "P1 total 2.9 TiB: cleanup.sh frees 680 G (per-SPW MMSs), allSPW_cleanup.sh 645 G; both ~1.3 TiB. Only sizes were measured; nothing was deleted."
+  root_cause: "A shell glob 'ms' matches any name ending in 'ms', not just measurement sets."
+  action: "List exactly what each glob matches and its size before anyone runs it; keep M2/cleanup.sh unused until every planned combo is imaged; consider a safer glob (*.ms, *.mms)."
+  wrong_actions:
+    - "Run cleanup.sh in M2 because the script name sounds safe"
+    - "Assume the script only removes MSs"
+  rubric:
+    - "Expands the glob against the real directory"
+    - "Distinguishes what is regenerable (combined MMS from the per-track .contsub, 1h47m) from what is not"
+  human_correction: "User asked what each script removes and how much space it frees, as a table."
+  verified: live   # read-only inspection only
+  source: "transcript 2026-09-28; profiling_notes.md 'Housekeeping numbers'"
+  raw_logs: []
+
+
 # ------------------------------------------------------------------ operator preferences stated by the user
 # Not incidents: standing rules for how the operator should behave. Candidates for guardrails-as-code.
 
@@ -906,3 +1043,13 @@ preferences:
   statement: "Commit and push when the user says so; local commits stay unpushed otherwise."
   why: "User gave explicit 'commit', 'commit and push' and 'push the commits' instructions."
   source: "msgs 5644, 6648, 7616, 8146"
+
+- id: show-what-a-delete-will-remove
+  statement: "Before any cleanup or deletion, expand the glob against the real directory and show what it matches and how much space it frees; never run it to find out."
+  why: "User asked what the cleanup scripts remove and how much they free; M2's would delete the 1.8 TB combined MMS."
+  source: "transcript 2026-09-28"
+
+- id: report-numbers-then-let-user-decide
+  statement: "When the user's visual judgement and a measurement differ, give the measurement with its limits and leave the call to the user."
+  why: "Stage 1 convergence: the user saw no negative bowls; the model had 24% negative |flux|; the user chose restore-only."
+  source: "transcript 2026-09-28"
