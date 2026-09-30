@@ -711,8 +711,11 @@ Installed 1.4.0 into `mktenv` (Python 3.11; pulls in astroquery, pvextractor, et
 `stage1_cat.xml` with `-o stage1.image.fits` (full-band spectra need the native cube; the beam is in its
 header) — ~5m40s total: ~1 min for source 1 and ~4.5 min for source 2, dominated by reading the 12.8GB
 cube. The DSS2 Blue overlay is fetched from SkyView, so it needs network (fine on the login node).
-`-m` needs ImageMagick, which isn't in `mktenv`, on the host (no module), or in the stale `idianext.sif`;
-`sip_combine_pillow.py` (local, in the M2 directory) ports SIP's non-`freq`-branch layout to Pillow instead.
+`-m` needs ImageMagick, which isn't in `mktenv`, on the host (no module), or in the stale `idianext.sif` --
+the SoFiA container (checked next) does have it, at `/usr/local/bin/magick`, and every later run used it from
+there; this note predates that check. `sip_combine_pillow.py` (local, in the M2 directory, at this point) ports
+SIP's non-`freq`-branch layout to Pillow instead -- superseded by `sip_postprocess.combine_figures_pillow()`,
+the version the pipeline actually runs.
 
 ### SIP inside the pipeline (2026-09-25): container facts and a compute-node hang
 
@@ -753,7 +756,7 @@ are from `sacct`.
 | 49997165 | stage1 `hi_image` | FAILED, 5m32s: MPI startup again, nid002499 |
 | 50019305 | stage1 `hi_image`, `nmajor=15`, threshold 0.2565mJy | **TIMEOUT**, 24h00m16s, in major cycle 9 |
 | 50066298 | stage1 restore-only (`niter=0`) | FAILED, 44m06s, but `stage1.image` was written |
-| 50068073 | `hi_postprocess`-style local run (rebin, export, beam, velocity) | COMPLETED, 7m28s (32 cores/56GB) |
+| 50068073 | local run (`postprocess_r1_rebin.py`, the one-off script `hi_postprocess.py` was later generalized from; rebin, export, beam, velocity) | COMPLETED, 7m28s (32 cores/56GB) |
 | 50068472 | final `hi_sofia` (18 cores/32GB) | COMPLETED, 2m26s: 3 reliable sources |
 
 ### Findings
@@ -765,7 +768,11 @@ are from `sacct`.
   (`--exclude=nid001034`) did not prevent the second. Resubmitting the unchanged job worked both times; nothing
   in `.config.tmp` changes because `hi_image.py` never ran.
 - **`nmajor=15` did not end stage 1 within the wall.** The log shows ~2.6h per major cycle (9 cycles in 24h), so 15
-  needs ~40h. The cap only helps if it fits the walltime (see CLAUDE.md).
+  needs ~40h. The cap only helps if it fits the walltime (see CLAUDE.md). Not a contradiction of the earlier
+  N4064 single-combo section's `nmajor=15` converging naturally in 6 cycles: that run was a wider band (1263 vs
+  765 channels here) starting from a sparse, 18-detection mask, both driving a much lower per-cycle cost than
+  this combo's broad `auto-multithresh` mask -- per-cycle cost, not the cap value, is what has to be checked
+  against the wall each time.
 - **Convergence evidence at the wall** (from `SDAlgorithmBase::deconvolve` lines, per major cycle, 765 channels):
   channels still cleaning 104 / 251 / 347 / 337 / 314 / 286 / 252 / 212 (cycles 1-8); iterations added per cycle
   1,629 / 5,982 / 44,573 / 18,200 / 8,419 / 4,198 / 1,967 / 929. Cycle 8 added ~2% of cycle 3. No "Possible
@@ -805,3 +812,58 @@ per-SPW `*.mms` 4 x 170G = 680G, top-level `NGC4064.mms` 611G + two calibrator M
 645G; both together ~1.3TiB (45%); `.post_selfcal` 611G, `.contsub` 459G, `.cont` 307G and `hi_combo0` 203G are
 untouched. The glob matches any name ending in "ms" (e.g. `.rms`), and in `M2` it would delete the 1.8TB
 `N4064_combined.mms` that imaging reads.
+
+## N4064 — robust 0.0, 40arcsec taper (`hi_combo_r0_t40arcsec`, 5arcsec cells, rebin [2,2,1], `nmajor=8`) (2026-09-28 to 09-30)
+
+Third combo, chosen to test whether a per-cycle-cost estimate can pick an `nmajor` that actually fits the wall
+(the `hi_combo_r1` timeout above showed the default 15 doesn't). Same `imspw='*:1414~1419MHz'`, stage 0
+`auto-multithresh` at 0.6mJy, stage 1 `mask='prev'` with a derived threshold; 765 channels, 2 nodes/8
+tasks-per-node/230GB, nid001034 and nid002499 excluded (both had failed MPI startup on earlier combos).
+
+| Job | What | Result |
+|---|---|---|
+| 50069931 | stage0 `hi_image` | COMPLETED, 6h04m |
+| 50069932 | `hi_sofia` masking pass | COMPLETED, 56s |
+| 50069933 | stage1 `hi_image`, `nmajor=8`, threshold 0.4143mJy | COMPLETED, 15h01m -- inside the 24h wall |
+| 50069934 | final `hi_sofia` (18 cores/32GB) | COMPLETED, 1m35s: 4 sources |
+
+### Findings
+
+- **The 40arcsec taper suits the shared 0.6mJy stage0 threshold** (unlike the untapered robust 0.0 combo's
+  earlier noise-chasing): stage0 finished in 6h04m -- faster than either untapered combo -- with zero "Possible
+  divergence" warnings. Stage0's noise came out at median 0.3187mJy (764 non-zero channels), giving the derived
+  stage1 threshold of 0.4143mJy.
+- **`nmajor=8` was picked from a per-cycle-cost estimate and it worked**: chosen so `8 x (a few hours)` would fit
+  24h; stage1 completed in 15h01m, comfortably inside the wall, with no TIMEOUT and no restore-only step needed
+  -- the first stage1 in this series to export directly. Per-cycle gaps were still rising through the run (~1,
+  1.5, 2.2, 1.5, 2.35h between the sampled `Run Major Cycle` timestamps), so the estimate had real margin, not a
+  close call.
+- **Rebinned export**: 432x432x765, 10arcsec pixels, beam 46.1x42.0arcsec = **22.0 pixels per beam area** (the
+  upper edge of the 18-22 target, from `imsize=864`/`cell=5arcsec` before the [2,2,1] rebin).
+- **Final catalogue: 4 sources, reliability >= 0.985.** The same two sources seen in every combo so far:
+  SoFiA J120254.42+184508.2 (18,790 px, W20~112km/s) and J120411.01+182637.4 (13,477 px, the NGC4064 target,
+  W20~186km/s, reliability 0.985) -- their voxel counts sit between the untapered robust 0.0 combo's (465, 389)
+  and `hi_combo_r1`'s (26,620, 16,269), consistent with the coarser beam/pixels, though the trend across combos
+  isn't otherwise explained. Plus two new, much smaller detections: SoFiA J120539.21+185848.6 and
+  J120641.33+180459.4, both exactly 29 voxels in a 4-channel-deep bounding box (~1 real channel wide), reliability
+  0.998/1.000. **Whether these two are real is not established** -- they sit at the smallest size SoFiA's linker
+  would still report, and neither has shown up in any earlier combo; against that, their reliability is well
+  above the 0.9 cutoff, not a marginal value. Not resolved by inspecting moment maps or checking for a matching
+  negative detection -- not yet done.
+- **SIP crashed making figures for one of the two small sources** (`ValueError: zero-size array to reduction
+  operation maximum which has no identity`; SIP's own log: "Failed for 1 sources with id number: 3", "Kinematic
+  major axis for source 3 based on just 2 data points", `kin_pa=-1` in its catalogue entry). Source 4, the same
+  29-voxel size, has a real `kin_pa` and went through cleanly -- so this is a degenerate-geometry edge case in
+  SIP's kinematic-PA/PV code (only 2 points define the major axis), not a general small-source problem, and not
+  a hang: SIP logged the failure and finished normally. Source 3 is missing `mom2`/`spec`/`specboth`/`specfull`/
+  `pv`/`pv_min` and has no combined figure; `_combine_all_pillow()` correctly skipped it with a warning rather
+  than failing the other three.
+- **Login-node SIP re-run for the overlay, and a self-correction.** The pipeline's own SIP step again went
+  offline (`SkyView isn't responding ...`), as on `hi_combo_r1`. `hi_sip.py --combo hi_combo_r0_t40arcsec`
+  fetched DSS2 Blue for all 4 sources (including source 3's `mom0`, which SIP had made before crashing on its
+  later steps) and rebuilt the combined figures for sources 1, 2 and 4 with Pillow. Checking source 3's missing
+  combined figure, an earlier read of its timestamp (comparing it against a *nonexistent* file, since no
+  `stage1_3_combo.png` was ever made) was wrongly reported as "stale, not caching-bug-related" when it should
+  have been reported as "never produced, and correctly so" -- a reminder that a missing file and a stale one need
+  separate handling, not just an mtime comparison. The real caching bug (fixed 2026-09-28, see above) and this
+  case are different failures that happened to surface in the same figures directory two days apart.
