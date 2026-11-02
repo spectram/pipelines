@@ -111,13 +111,17 @@ def freq_to_optical_velocity(fitsfile, restfreq=None):
         v_center = C_MS * (f0 - f_center) / f_center
         cdelt_vel = -C_MS * f0 / f_center**2 * cdelt
 
-        hdr['CTYPE{0}'.format(freq_axis)] = 'VOPT'
+        hdr['CTYPE{0}'.format(freq_axis)] = 'VOPT-F2W'
         hdr['CRVAL{0}'.format(freq_axis)] = v_center
         hdr['CRPIX{0}'.format(freq_axis)] = center_pix
         hdr['CDELT{0}'.format(freq_axis)] = cdelt_vel
         hdr['CUNIT{0}'.format(freq_axis)] = 'm/s'
         hdr['RESTFRQ'] = f0
 
+        # Old axis labels
+        for key in ('ALTRVAL', 'ALTRPIX', 'VELREF'):
+            hdr.remove(key, ignore_missing=True)
+            
         data = hdu[0].data
 
     nhdu = fits.PrimaryHDU(data=data, header=hdr)
