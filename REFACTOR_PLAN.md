@@ -1,5 +1,22 @@
 # Pawsey Pipeline Refactor Plan
 
+> **Retired 2026-11-12: this refactor is complete.** Phases 0–6 and 9–10 are done. Phase 8's fix porting
+> is complete. The remaining work moves to the packaged-release plan:
+> - Phase 8's cutover → the repository split;
+> - Phase 7 (walltime) → job chaining for `hi_image`.
+>
+> Open threads also carried over:
+> - container rebuild;
+> - MPI hang when `tclean` is skipped;
+> - restore-only teardown crash;
+> - empty cube channels outside `imspw`;
+> - `P1_test` stall;
+> - per-combo `hi_combos` parameters;
+> - continuum-only path not run on real data.
+>
+> This file is kept as the engineering record, with the 2026-11-12 status check below. Don't add new
+> phases here.
+
 ## Status (for a fresh agent session picking this up)
 
 Branch: `pawsey-refactor`, forked from `HI-pawsey`'s tip. Commits so far, oldest first:
@@ -794,6 +811,34 @@ against the real `M2` config, and a real `hi_sip.py` run (DSS2 Blue for all 3 `h
 `hi_combo_r1`'s cube, but was not itself re-run on real data. Also documented: `nmajor` must fit the walltime
 (stage 1 at ~2.6h/cycle needs ~40h for 15 cycles) -- `CLAUDE.md`, `profiling_notes.md`.
 
+**Status check (2026-11-12): Phase 8's fix porting is complete; Phase 7 is not implemented.** N4064's four
+tracks being reduced end to end does not by itself close either phase.
+
+*Phase 8.* Every `HI-pawsey` commit made after `pawsey-refactor` branched off (merge base `2077eae`;
+`HI-pawsey` has had no commits since 2026-08-23) is in this branch. `git cherry` matches `543363b`
+(stale selfcal_part1 products), `1a1f8f0` (SoFiA container `singularity/4.1.0-nohost`) and `4ad35b6`
+(run_sofia imagename with `.` in frequency ranges). `3075f90` (run_sofia cpu/mem/time sizing) is in too,
+rewritten to fit the new code, in `write_sbatch()`'s `run_sofia` special case. What remains is the cutover
+itself: make this branch the main one and retire `HI-pawsey` (`NEW_REPO_PLAN.md`, local-only and not yet
+carried out, would do this by moving the branch to its own repository). The plan's cutover condition
+(output checked unchanged via `golden_diff.sh` plus a real run) is met for the HI path by N4064. The
+continuum-only path (`-I` without `-H`) as it stands now has not been run on real data.
+
+*Phase 7.* Neither track has been built. 7a: only the `array_job_capable` field exists
+(`script_registry.py`), and nothing reads it. There is no `channel_parallel` toggle, no array of
+per-channel jobs and no step to stitch the channels back together. 7b: no chained jobs, and the isolated
+`restart=True` + `parallel=True` resume test it asks for first has not been run. N4064 hit the 24h limit
+(stage 1 at ~2.6h per major cycle hit the wall in cycle 9) and got past it by hand: `run_stage()`'s
+reuse of an existing PSF/residual/mask on manual resubmission, the `nmajor` cap, and finishing a
+converged stage with a restore-only run (`niter=0` in `.config.tmp`) followed by `hi_postprocess.py`.
+That shows the limit can be worked around by hand; Phase 7 is still needed to make it automatic. 7a's
+case is weaker now that MPI-parallel cube imaging works (Phase 9), but each stage still has to fit in
+24h. The smallest useful next step is 7b's job chaining applied to `hi_image` rather than selfcal: split
+a stage's major cycles across chained jobs, each resuming from the previous one's PSF/residual/model
+(that resume logic already exists in `run_stage()`). This first needs the MPI-hang-on-skip bug fixed
+(a resubmitted `hi_image` whose `tclean` is skipped never registers casampi's `atexit` hook and hangs),
+since every job after the first in a chain resubmits the same script.
+
 ---
 
 ## Context
@@ -1125,6 +1170,9 @@ verification details.
 
 ## Phase 7 — Parallelism strategy for Setonix's 24h cap (goal 6) — confirmed: split into two tracks
 
+**Status (2026-11-12): not implemented** -- see the 2026-11-12 status check at the top. N4064 worked
+around the 24h limit by hand; the next step proposed there is 7b's job chaining applied to `hi_image`.
+
 - **7a (Memo-13 array jobs, for Phase 6's genuinely cube-mode HI imaging)**: an opt-in `channel_parallel`
   toggle in `[hi_image]`. Extend Phase 1's registry with `array_job_capable` so the cube-imaging scripts
   reuse the *existing* SLURM `--array` machinery (`write_command()`'s array-job branch, `nconcurrent`
@@ -1157,6 +1205,8 @@ verification details.
   needed — directly targets the stated problem.
 
 ## Phase 8 — Ongoing `HI-pawsey` fix porting & cutover
+
+**Status (2026-11-12): porting complete; cutover not done** -- see the 2026-11-12 status check at the top.
 
 Not a one-time step — a recurring practice throughout Phases 1–7 (see Foundational Decisions). Once this
 branch's baseline (through at least Phase 5) is validated via golden-diff and ideally a real small-MS run,

@@ -10,10 +10,11 @@ CASA6 (`casatools`/`casatasks`/`casampi`). Originally built for the Ilifu cluste
 is an in-progress port to Pawsey's Setonix (Cray/HPE Shasta, Slurm), currently being adapted for narrow-SPW
 HI/spectral-line workflows rather than the original multi-SPW continuum default.
 
-Branches: `master`/`dev` (upstream Ilifu), `HI-dev` (HI-focused work off dev), `HI-pawsey` (Pawsey port,
-active), `pawsey-refactor` (architectural refactor of the Pawsey port, forked off `HI-pawsey`'s tip; see
-`REFACTOR_PLAN.md` on that branch for the phased plan and current progress before starting work there),
-`casa6`, `selfcal_dev`.
+Branches: `master`/`dev` (upstream Ilifu), `HI-dev` (HI-focused work off dev), `HI-pawsey` (Pawsey port;
+no commits since 2026-08-23, all its fixes are in `pawsey-refactor`), `pawsey-refactor` (the active branch,
+forked off `HI-pawsey`'s tip), `casa6`, `selfcal_dev`. The refactor `REFACTOR_PLAN.md` tracked is complete
+and retired (2026-11-12); it remains the engineering record. Work toward a packaged release in its own
+repository is planned in a local-only `NEW_REPO_PLAN.md`, if present in this checkout.
 
 ## Environment setup
 
