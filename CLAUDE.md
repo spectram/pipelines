@@ -445,7 +445,7 @@ The pipeline calls every script via `singularity exec <container> python3 <scrip
   value (confirmed empirically: it silently drops Cray's MPI/fabric library paths).
 
 **Every one of the `CONTAINER_ENV` fixes above is compensating for a stale container build, not an
-inherent container limitation — confirmed live (2026-09-17).** `containers/spack-idia-fixed.def`'s
+inherent container limitation — confirmed live (2026-09-17).** `containers/spack-idia-fixed.def` (removed 2026-11-15, untested; see git history)'s
 `%post` section (last updated 2026-08-22) already bakes in a source-built `mpi4py`, `casampi==0.6.0`, an
 `OMPI_COMM_WORLD_RANK` shim (`91-ompi-rank-shim.sh`, more robust than the pipeline's own — it also falls
 back to `SLURM_PROCID`), and an OpenSSL `LD_PRELOAD` shim (`91-openssl-preload.sh`, discovering the spack
