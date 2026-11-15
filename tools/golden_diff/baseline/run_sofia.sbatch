@@ -12,7 +12,7 @@
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export SRUN_CPUS_PER_TASK=$SLURM_CPUS_PER_TASK
-module load singularity/4.1.0-nohost
+module load singularity/4.3.5-nohost
 
 
 srun -c 10 singularity exec /software/projects/pawsey1164/ssankar/containers/SoFiA-V2.6.7-2025-03-12.sif  python3 __REPO_ROOT__/processMeerKAT/aux_scripts/run_sofia.py --config .config.tmp

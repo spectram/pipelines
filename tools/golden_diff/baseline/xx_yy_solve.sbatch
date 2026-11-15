@@ -12,7 +12,7 @@
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export SRUN_CPUS_PER_TASK=$SLURM_CPUS_PER_TASK
-module load singularity/4.1.0-mpi
+module load singularity/4.3.5-mpi
 
 
 export SINGULARITYENV_LD_LIBRARY_PATH="/opt/casacore/lib:$SINGULARITYENV_LD_LIBRARY_PATH"

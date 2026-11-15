@@ -187,7 +187,7 @@ class ContainerProfile:
     #Vars to PREPEND to (not replace) via a host-side shell `export` inserted before the
     #singularity exec call, rather than via `singularity exec --env` -- see write_command().
     prepend_env: dict = field(default_factory=dict)
-    #Override for the [slurm] modules list (normally the same singularity/4.1.0-mpi module for
+    #Override for the [slurm] modules list (normally the same singularity/4.3.5-mpi module for
     #every script). None means "use the configured [slurm] modules unchanged".
     modules: list = None
 
@@ -236,7 +236,7 @@ CONTAINER_PROFILES = {
     #"-nohost" (no host-library injection) avoids pulling them in and the container runs cleanly.
     #Confirmed via a standalone test job: SoFiA ran successfully on a real continuum image (333
     #sources found, reliability ~1.0).
-    SOFIA_CONTAINER: ContainerProfile(modules=['singularity/4.1.0-nohost']),
+    SOFIA_CONTAINER: ContainerProfile(modules=['singularity/4.3.5-nohost']),
 }
 
 _WARNED_UNKNOWN_CONTAINERS = set()
@@ -404,7 +404,7 @@ def parse_args():
                         help="Run pipeline with these scripts, in this order, using these containers (3rd value - empty string to default to [-c --container]). Is it threadsafe (2nd value)?")
     parser.add_argument("-b","--precal_scripts", action='append', nargs=3, metavar=('script','threadsafe','container'), required=False, type=parse_scripts, default=PRECAL_SCRIPTS, help="Same as [-S --scripts], but run before calibration.")
     parser.add_argument("-a","--postcal_scripts", action='append', nargs=3, metavar=('script','threadsafe','container'), required=False, type=parse_scripts, default=POSTCAL_SCRIPTS, help="Same as [-S --scripts], but run after calibration.")
-    parser.add_argument("--modules", nargs='*', metavar='module', required=False, default=['singularity/4.1.0-mpi'], help="Load these modules within each sbatch script.")
+    parser.add_argument("--modules", nargs='*', metavar='module', required=False, default=['singularity/4.3.5-mpi'], help="Load these modules within each sbatch script.")
     parser.add_argument("-w","--mpi_wrapper", metavar="path", required=False, type=str, default=MPI_WRAPPER,
                         help="Use this mpi wrapper when calling threadsafe scripts [default: '{0}'].".format(MPI_WRAPPER))
     parser.add_argument("-c","--container", metavar="path", required=False, type=str, default=CONTAINER, help="Use this container when calling scripts [default: '{0}'].".format(CONTAINER))

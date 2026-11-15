@@ -13,8 +13,26 @@ HI/spectral-line workflows rather than the original multi-SPW continuum default.
 Branches: `master`/`dev` (upstream Ilifu), `HI-dev` (HI-focused work off dev), `HI-pawsey` (Pawsey port;
 no commits since 2026-08-23, all its fixes are in `pawsey-refactor`), `pawsey-refactor` (the active branch,
 forked off `HI-pawsey`'s tip), `casa6`, `selfcal_dev`. The refactor `REFACTOR_PLAN.md` tracked is complete
-and retired (2026-11-12); it remains the engineering record. Work toward a packaged release in its own
-repository is planned in a local-only `NEW_REPO_PLAN.md`, if present in this checkout.
+and retired (2026-11-12); it remains the engineering record.
+
+**This checkout is now a fallback** (branch `fallback-2026.11`, made from the tag
+`pawsey-refactor-final-2026-11`). Active development, the release plan (`NEW_REPO_PLAN.md`) and the new
+container (`processmeerkat_3.0.0-rc2.sif`) live in the separate repository `spectram/assisted_DR_prototype`
+(`/software/projects/pawsey1164/ssankar/assisted_DR_prototype`). Only changes that keep this fallback running
+belong here.
+
+**Setonix software stack (2026-11).** Setonix's default environment became `pawseyenv/2026.11`, where the
+`singularity/4.1.0-*` modules no longer exist. This branch uses `singularity/4.3.5-mpi` (and `-nohost` for the
+SoFiA image), still with `idianext.sif` and all its workarounds below, unchanged. That combination was
+validated on 2026-11-12:
+- job 52925862: MPI and casampi across 4 ranks on Cray MPICH 9.1, and the CASA/casacore/PyBDSF imports;
+  SoFiA under `-nohost`;
+- job 52926180: 1 casampi client and 4 servers; `mstransform(createmms=True)` → 3 sub-MSs; parallel cube
+  and mfs `tclean`; exit 0.
+
+To reuse a config built before this change, set `[slurm] modules = ['singularity/4.3.5-mpi']` and re-run
+`-R`. Interactive shells need `module load singularity/4.3.5-mpi python/3.11.6` (as `~/mkt_workflow.sh` does)
+before `-B`.
 
 ## Environment setup
 
